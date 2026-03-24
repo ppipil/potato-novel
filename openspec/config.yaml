@@ -1,0 +1,18 @@
+schema: spec-driven
+
+context: |
+  Tech stack: Vue 3 frontend + FastAPI backend.
+  Domain: Potato Novel demo that uses SecondMe OAuth to authenticate users before they enter the bookshelf and story co-creation flow.
+  Current OAuth flow: the browser starts login from the backend, SecondMe redirects back to the frontend callback page at /api/auth/callback, and the frontend POSTs code/state to the backend /api/auth/exchange endpoint to finish token exchange and establish a session cookie.
+  Security conventions: Client Secret must remain on the backend, OAuth state must be validated, and session state is represented by a backend-signed cookie.
+  Product scope today: OAuth login, bookshelf access, role selection, and demo story preview. MCP or integration release work should be proposed as a separate change unless explicitly requested.
+
+rules:
+  proposal:
+    - Prefer documenting current confirmed behavior before proposing architectural changes.
+    - Call out inferred items separately when repository docs disagree.
+  design:
+    - Keep OAuth security boundaries explicit.
+    - Note when a design choice preserves the current demo flow instead of the ideal long-term architecture.
+  tasks:
+    - Keep each task small enough to complete in one focused coding session.
