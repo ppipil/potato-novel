@@ -9,7 +9,8 @@ from urllib.parse import urlencode
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from .config import settings
 from .integration import build_integration_manifest
@@ -20,6 +21,7 @@ app = FastAPI(title="Potato Novel Backend")
 session_store: dict[str, dict[str, Any]] = {}
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 STORIES_PATH = DATA_DIR / "stories.json"
+FRONTEND_DIST_DIR = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
 
 app.add_middleware(
     CORSMiddleware,
@@ -423,6 +425,23 @@ def _mcp_result(request_id: Any, payload: Any) -> dict[str, Any]:
 
 def _mcp_error(request_id: Any, code: int, message: str) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
+
+
+if FRONTEND_DIST_DIR.exists():
+    assets_dir = FRONTEND_DIST_DIR / "assets"
+    if assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+    @app.get("/", include_in_schema=False)
+    async def serve_index() -> FileResponse:
+        return FileResponse(FRONTEND_DIST_DIR / "index.html")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_spa(full_path: str) -> Response:
+        requested = FRONTEND_DIST_DIR / full_path
+        if requested.exists() and requested.is_file():
+            return FileResponse(requested)
+        return FileResponse(FRONTEND_DIST_DIR / "index.html")
 
 
 def _extract_story_from_sse(raw_text: str) -> str:
