@@ -18,7 +18,6 @@ from .openings import PRESET_OPENINGS, get_opening_summary, get_opening_title
 from .security import random_urlsafe, sign_payload, verify_payload
 
 app = FastAPI(title="Potato Novel Backend")
-session_store: dict[str, dict[str, Any]] = {}
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 STORIES_PATH = DATA_DIR / "stories.json"
 FRONTEND_DIST_DIR = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
@@ -55,10 +54,11 @@ def _get_server_session(request: Request) -> dict[str, Any]:
     payload = verify_payload(session, settings.session_secret)
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid session")
-    server_session = session_store.get(payload.get("sid", ""))
-    if not server_session:
+    token = payload.get("token", {})
+    user = payload.get("user", {})
+    if not token.get("access_token"):
         raise HTTPException(status_code=401, detail="Session expired")
-    return server_session
+    return {"user": user, "token": token}
 
 
 def _load_stories() -> list[dict[str, Any]]:
@@ -188,7 +188,6 @@ async def auth_exchange(request: Request) -> JSONResponse:
         userinfo = userinfo_result.get("data", userinfo_result)
 
     # Keep the cookie payload small enough for browsers to reliably store it.
-    session_id = random_urlsafe(18)
     session_user = {
         "userId": userinfo.get("userId"),
         "name": userinfo.get("name"),
@@ -196,8 +195,8 @@ async def auth_exchange(request: Request) -> JSONResponse:
         "avatar": userinfo.get("avatar"),
         "route": userinfo.get("route"),
     }
-    session_store[session_id] = {
-        "created_at": int(time.time()),
+    session_payload = {
+        "iat": int(time.time()),
         "user": session_user,
         "token": {
             "access_token": access_token,
@@ -205,11 +204,6 @@ async def auth_exchange(request: Request) -> JSONResponse:
             "expires_in": token_data.get("expiresIn") or token_data.get("expires_in"),
             "scope": token_data.get("scope", settings.scope),
         },
-    }
-    session_payload = {
-        "iat": int(time.time()),
-        "sid": session_id,
-        "user": session_user,
     }
     session_token = sign_payload(session_payload, settings.session_secret)
 
@@ -231,11 +225,6 @@ async def current_user(request: Request) -> JSONResponse:
 
 @app.post("/api/auth/logout")
 async def auth_logout(request: Request) -> Response:
-    session = request.cookies.get("session")
-    if session:
-        payload = verify_payload(session, settings.session_secret)
-        if payload and payload.get("sid") in session_store:
-            session_store.pop(payload["sid"], None)
     response = JSONResponse({"ok": True})
     response.delete_cookie("session")
     return response
