@@ -1,9 +1,22 @@
 {
   "buildCommand": "cd frontend && npm ci && npm run build",
+  "outputDirectory": "frontend/dist",
   "rewrites": [
     {
-      "source": "/(.*)",
+      "source": "/api/(.*)",
       "destination": "/api/index.py"
+    },
+    {
+      "source": "/mcp",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/integration/(.*)",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/((?!api/|mcp$|integration/|assets/|favicon.ico).*)",
+      "destination": "/index.html"
     }
   ]
 }
