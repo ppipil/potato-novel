@@ -112,6 +112,18 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/api/debug-config")
+async def debug_config() -> JSONResponse:
+    return JSONResponse(
+        {
+            "redirect_uri": settings.redirect_uri,
+            "frontend_origin": settings.frontend_origin,
+            "public_base_url": settings.public_base_url,
+            "app_id": settings.secondme_app_id,
+        }
+    )
+
+
 @app.get("/integration/manifest.json")
 async def integration_manifest(request: Request) -> JSONResponse:
     base_url = settings.public_base_url or str(request.base_url).rstrip("/")
