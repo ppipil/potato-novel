@@ -50,6 +50,14 @@ export async function startStorySession(payload) {
   return postJson("/api/story/start", payload, "Story start failed");
 }
 
+export async function preloadStoryPackage(payload) {
+  return postJson("/api/story/preload", payload, "Story preload failed");
+}
+
+export async function regenerateStoryPackage(payload) {
+  return postJson("/api/story/regenerate", payload, "Story regenerate failed");
+}
+
 export async function continueStorySession(payload) {
   return postJson("/api/story/continue", payload, "Story continuation failed");
 }
@@ -81,6 +89,10 @@ export async function getStorySession(sessionId) {
   return response.json();
 }
 
+export async function hydrateStorySession(sessionId) {
+  return postJson(`/api/story/sessions/${sessionId}/hydrate`, {}, "Story session hydrate failed");
+}
+
 export async function listStories() {
   const response = await fetch(`${API_BASE_URL}/api/stories`, {
     credentials: "include"
@@ -101,6 +113,10 @@ export async function getStory(storyId) {
     throw new Error(error || "Story fetch failed");
   }
   return response.json();
+}
+
+export async function cacheStoryEndingAnalysis(storyId, payload) {
+  return postJson(`/api/stories/${storyId}/ending-analysis`, payload, "Story ending analysis cache failed");
 }
 
 export function getLoginUrl() {

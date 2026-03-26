@@ -1,7 +1,8 @@
 <script setup>
 import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
-import { analyzeStoryEnding, getStory, listStories } from "../lib/api";
+import LoadingOverlay from "../components/LoadingOverlay.vue";
+import { analyzeStoryEnding, cacheStoryEndingAnalysis, getStory, listStories } from "../lib/api";
 
 const router = useRouter();
 const stories = ref([]);
@@ -41,7 +42,7 @@ async function openStory(storyId) {
     const result = await getStory(storyId);
     currentStory.value = result.story;
     error.value = "";
-    endingAnalysis.value = null;
+    endingAnalysis.value = result.story.meta?.endingAnalysis || null;
     await ensureEndingAnalysis(result.story);
   } catch (err) {
     error.value = err instanceof Error ? err.message : "读取失败";
@@ -53,17 +54,43 @@ async function ensureEndingAnalysis(storyRecord) {
     return;
   }
 
+  if (storyRecord.meta?.endingAnalysis) {
+    endingAnalysis.value = storyRecord.meta.endingAnalysis;
+    return;
+  }
+
   analyzingEnding.value = true;
   try {
     const result = await analyzeStoryEnding({
       story: storyRecord.story,
       meta: {
         ...storyRecord.meta,
-        summary: extractEndingSummary(storyRecord.story),
-        transcript: extractTranscriptFromStory(storyRecord.story)
+        summary: storyRecord.meta?.summary || extractEndingSummary(storyRecord.story),
+        transcript: storyRecord.meta?.transcript || extractTranscriptFromStory(storyRecord.story)
       }
     });
     endingAnalysis.value = result.analysis;
+    if (storyRecord.id) {
+      await cacheStoryEndingAnalysis(storyRecord.id, { analysis: result.analysis });
+      currentStory.value = {
+        ...storyRecord,
+        meta: {
+          ...(storyRecord.meta || {}),
+          endingAnalysis: result.analysis
+        }
+      };
+      stories.value = stories.value.map((item) =>
+        item.id === storyRecord.id
+          ? {
+              ...item,
+              meta: {
+                ...(item.meta || {}),
+                endingAnalysis: result.analysis
+              }
+            }
+          : item
+      );
+    }
   } catch (err) {
     error.value = err instanceof Error ? err.message : "尾声分析生成失败";
   } finally {
@@ -169,6 +196,12 @@ function extractTranscriptFromStory(storyText) {
 <template>
   <main class="paper-shell">
     <section class="paper-page px-0 pt-0">
+      <LoadingOverlay
+        :visible="loading || analyzingEnding"
+        :title="analyzingEnding ? '正在解读这颗土豆' : '正在加载历史记录'"
+        :description="analyzingEnding ? 'SecondMe 正在根据这局故事补全结局签语。' : '土豆正在翻找你书架里的旧宇宙，请稍候。'"
+      />
+
       <header class="glass-panel sticky top-0 z-20 border-b border-paper-200/70 px-6 py-5 sm:px-8">
         <div class="flex items-center justify-between gap-4">
           <button class="active-press text-base text-paper-700" @click="router.push('/bookshelf')">返回书架</button>
@@ -180,29 +213,7 @@ function extractTranscriptFromStory(storyText) {
       </header>
 
       <div class="hide-scrollbar h-[calc(100vh-4.5rem)] overflow-y-auto px-6 pb-16 pt-8 sm:px-8">
-        <section v-if="loading" class="text-paper-800">正在加载历史记录...</section>
-
-        <section v-else class="space-y-8">
-          <div class="hide-scrollbar flex gap-4 overflow-x-auto pb-2">
-            <button
-              v-for="(item, index) in stories"
-              :key="item.id"
-              class="book-cover active-press text-left"
-              @click="openStory(item.id)"
-            >
-              <div
-                class="absolute inset-0"
-                :class="index % 3 === 0 ? 'bg-slate-800/20' : index % 3 === 1 ? 'bg-rose-300/28' : 'bg-amber-700/18'"
-              ></div>
-              <div class="absolute right-4 top-4 rounded-xl bg-stone-400/80 px-3 py-2 text-sm text-white">
-                {{ item.meta?.turnCount || 1 }} 轮
-              </div>
-              <div class="absolute inset-x-0 bottom-0 z-10 px-4 pb-5 text-lg font-serif text-white">
-                {{ (item.meta?.opening || "未命名作品").split('\n').find(Boolean) }}
-              </div>
-            </button>
-          </div>
-
+        <section class="space-y-8">
           <p v-if="error" class="rounded-[22px] bg-red-50 px-4 py-3 text-sm text-red-700">{{ error }}</p>
           <p v-if="!stories.length" class="text-paper-700/70">还没有保存的小说，先去生成一篇吧。</p>
 
@@ -244,6 +255,15 @@ function extractTranscriptFromStory(storyText) {
                 <p class="text-center font-serif text-[1.45rem] text-paper-900">尾声签语</p>
                 <div class="rounded-[22px] bg-paper-100/80 px-4 py-4">
                   <p class="font-serif text-[1.05rem] font-semibold text-paper-900">{{ reviewPersonaSummary.title }}</p>
+                  <div v-if="reviewPersonaSummary.personaTags?.length" class="mt-3 flex flex-wrap gap-2">
+                    <span
+                      v-for="tag in reviewPersonaSummary.personaTags"
+                      :key="tag"
+                      class="rounded-full bg-white px-3 py-1.5 text-xs font-semibold text-paper-800"
+                    >
+                      {{ tag }}
+                    </span>
+                  </div>
                   <p class="mt-2 text-sm leading-7 text-paper-700/80">{{ reviewPersonaSummary.romance }}</p>
                   <p class="mt-2 text-sm leading-7 text-paper-700/70">{{ reviewPersonaSummary.life }}</p>
                   <p class="mt-2 text-sm leading-7 text-paper-700/70">{{ reviewPersonaSummary.nextUniverseHook }}</p>

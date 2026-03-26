@@ -23,6 +23,7 @@ STORIES_PATH = DATA_DIR / "stories.json"
 SESSIONS_PATH = DATA_DIR / "story_sessions.json"
 FRONTEND_DIST_DIR = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
 COOKIE_PATH = "/"
+PACKAGE_VERSION = 2
 
 app.add_middleware(
     CORSMiddleware,
@@ -105,6 +106,80 @@ def _build_json_story_instruction(extra_instruction: str = "") -> str:
     )
 
 
+def _build_json_story_package_instruction(extra_instruction: str = "") -> str:
+    extra = f"\n修正要求：{extra_instruction.strip()}" if extra_instruction.strip() else ""
+    return (
+        "你正在担任中文互动小说引擎，需要一次性生成一个可本地游玩的短篇互动故事包，而不是逐回合聊天续写。"
+        "必须返回严格 JSON，不要使用 Markdown，不要使用代码块，不要添加 JSON 之外的任何文字。\n"
+        "只允许返回一个 JSON object，不能在前后补充说明、注释、标题或解释。\n"
+        "JSON 结构必须为："
+        '{"title":"故事标题","rootNodeId":"起始节点ID","nodes":['
+        '{"id":"节点ID","kind":"turn 或 ending","turn":1,'
+        '"stageLabel":"阶段标题","directorNote":"局势提示","scene":"正文","summary":"本节点摘要",'
+        '"choices":[{"id":"选项ID","text":"选项文案","nextNodeId":"下个节点ID","style":"风格","tone":"语气",'
+        '"effects":{"persona":{"真诚":1},"relationship":{"好感":1}}}]}'
+        "]}"
+        "其中 turn 节点必须正好 3 个 choices，ending 节点的 choices 必须是空数组。"
+        "整个故事包固定为 3 个 ending 节点。"
+        "整个分支图通常包含 4 到 7 个 turn 节点，但用户实际单条游玩路径应在 2 到 4 个 turn 节点后进入结局。"
+        "rootNodeId 必须指向第一个 turn 节点。"
+        "每个 turn 节点都必须能通过 choices 走到某个 ending 节点。"
+        "每个 choice 的 nextNodeId 必须指向同一故事包中的合法节点，不能留空，不能引用不存在的节点。"
+        "每个 choice 都要写出明确的人设或好感影响，effects 里的数值只能用整数。"
+        "正文 scene 必须是 2 到 4 段中文互动小说文本，风格更像橙光/互动小说，而不是聊天回复。"
+        "三个 choices 必须明显不同，不能只是同义改写。"
+        "至少 2 个 choices 要有明确对白或人物动作，不要写成抽象标签。"
+        "正文 scene 和 choices.text 中禁止使用英文双引号 \"，因为这会破坏 JSON。"
+        "如果需要对白，一律使用中文直角引号「」或自然叙述，不要使用英文双引号。"
+        "正文和选项里都不要出现 ```、JSON、注释、解释文字。"
+        "单个 scene 控制在 3 段以内，单个 choice 控制在 40 个中文字符以内。"
+        "不要输出任何 null，不要省略必填字段。"
+        f"{extra}"
+    )
+
+
+def _build_json_story_skeleton_instruction(extra_instruction: str = "") -> str:
+    extra = f"\n修正要求：{extra_instruction.strip()}" if extra_instruction.strip() else ""
+    return (
+        "你正在担任中文互动小说引擎，现在只需要先生成一个可玩的分支骨架，不要生成长篇正文。"
+        "必须返回严格 JSON，不要使用 Markdown，不要使用代码块，不要添加 JSON 之外的任何文字。\n"
+        "只允许返回一个 JSON object。\n"
+        "JSON 结构必须为："
+        '{"title":"故事标题","rootNodeId":"起始节点ID","nodes":['
+        '{"id":"节点ID","kind":"turn 或 ending","turn":1,"stageLabel":"阶段标题",'
+        '"directorNote":"一句局势提示","summary":"一句本节点摘要",'
+        '"choices":[{"id":"选项ID","text":"选项文案","nextNodeId":"下个节点ID","style":"风格","tone":"语气",'
+        '"effects":{"persona":{"真诚":1},"relationship":{"好感":1}}}]}'
+        "]}"
+        "其中 turn 节点必须正好 3 个 choices，ending 节点的 choices 必须是空数组。"
+        "整个骨架固定为 3 个 ending 节点。"
+        "整个分支图通常包含 4 到 7 个 turn 节点，但用户实际单条游玩路径应在 3 个 turn 节点后进入结局。"
+        "所有 nextNodeId 都必须合法，并且从 rootNodeId 必须能走到 ending。"
+        "summary 和 directorNote 必须简短，每项不超过 30 个中文字符。"
+        "choices.text 不超过 28 个中文字符。"
+        "不要输出 scene 字段，不要写长段正文。"
+        "正文中的对白后续再生成，这一阶段只保留骨架。"
+        "不要输出 2 个或 4 个 ending 节点。"
+        "不要输出 null，不要省略必填字段。"
+        f"{extra}"
+    )
+
+
+def _build_json_story_node_instruction(extra_instruction: str = "") -> str:
+    extra = f"\n修正要求：{extra_instruction.strip()}" if extra_instruction.strip() else ""
+    return (
+        "你正在补全互动小说某一个节点的正文内容。"
+        "必须返回严格 JSON，不要使用 Markdown，不要使用代码块，不要添加 JSON 之外的任何文字。\n"
+        "JSON 结构必须为："
+        '{"stageLabel":"阶段标题","directorNote":"一句局势提示","scene":"2到3段正文","summary":"一句本节点摘要"}'
+        "scene 必须是中文互动小说文本。"
+        "禁止使用英文双引号 \"，如果出现对白，只能使用中文直角引号「」。"
+        "不要输出 choices，不要输出 nodes，不要解释结构。"
+        "summary 和 directorNote 要短，scene 要围绕已给定的分支走向。"
+        f"{extra}"
+    )
+
+
 def _compose_story_prompt(opening: str, role: str, user_name: str, extra_instruction: str = "") -> str:
     return (
         f"{_build_json_story_instruction(extra_instruction)}\n\n"
@@ -115,6 +190,100 @@ def _compose_story_prompt(opening: str, role: str, user_name: str, extra_instruc
         "这一回合要完成世界建立、冲突抛出和可行动作设计。"
         "选项之间必须产生真实分支张力，同时要让用户一眼看出这是不同性格主角会说的话或会做的事。"
         "status 默认为 ongoing，除非开头本身已经天然走到结局。"
+    )
+
+
+def _compose_story_package_prompt(
+    opening: str,
+    role: str,
+    user_name: str,
+    persona_profile: dict[str, Any],
+    repair_hint: str = "",
+) -> str:
+    preferred = "、".join(persona_profile.get("preferredStyles", [])) or "真诚、试探、撩拨"
+    return (
+        f"{_build_json_story_package_instruction(repair_hint)}\n\n"
+        f"玩家昵称：{user_name or 'SecondMe 用户'}\n"
+        f"玩家身份：{role}\n"
+        f"故事开头：{opening}\n"
+        f"用户偏好人设：{persona_profile.get('label', '未知分身')}，偏好风格：{preferred}\n"
+        "生成要求："
+        "整个故事包要有清晰开端、升温、反转、收束；"
+        "不同选项要体现温柔、试探、强势、心机、嘴硬、撩拨等差异；"
+        "至少设计 1 个甜系或高好感结局，也可以加入 1 个翻车或遗憾结局；"
+        "不要出现开放式输入槽，不要让玩家自己补完动作。"
+        "所有对白统一写成「这样」而不是 \"这样\"。"
+        "宁可句子短一点，也不要把 JSON 写坏。"
+        "请优先保证结构正确，其次再追求文风华丽。"
+    )
+
+
+def _compose_story_skeleton_prompt(
+    opening: str,
+    role: str,
+    user_name: str,
+    persona_profile: dict[str, Any],
+    repair_hint: str = "",
+) -> str:
+    preferred = "、".join(persona_profile.get("preferredStyles", [])) or "真诚、试探、撩拨"
+    return (
+        f"{_build_json_story_skeleton_instruction(repair_hint)}\n\n"
+        f"玩家昵称：{user_name or 'SecondMe 用户'}\n"
+        f"玩家身份：{role}\n"
+        f"故事开头：{opening}\n"
+        f"用户偏好人设：{persona_profile.get('label', '未知分身')}，偏好风格：{preferred}\n"
+        "请先生成结构稳定的互动故事骨架："
+        "要有开端、升温、反转、收束；"
+        "不同选项要体现温柔、试探、强势、心机、嘴硬、撩拨等差异；"
+        "三个结局里至少包含：1 个高好感结局、1 个成长/和解结局、1 个遗憾或开放式结局。"
+        "再次强调：固定输出 3 个 ending 节点，且用户单条路径应在 2 到 4 个 turn 节点后进入结局。"
+        "这一阶段最重要的是结构合法、分支清晰、选项不重复。"
+    )
+
+
+def _compose_story_node_prompt(
+    opening: str,
+    role: str,
+    title: str,
+    skeleton_nodes: list[dict[str, Any]],
+    node: dict[str, Any],
+    repair_hint: str = "",
+) -> str:
+    node_lines = []
+    for item in skeleton_nodes:
+        choices_text = "；".join(
+            f"{choice.get('id')}->{choice.get('nextNodeId')}:{choice.get('text')}"
+            for choice in item.get("choices", [])
+        ) or "无选项"
+        node_lines.append(
+            f"- {item.get('id')} | {item.get('kind')} | turn={item.get('turn')} | {item.get('stageLabel')} | {item.get('summary')} | {choices_text}"
+        )
+    skeleton_digest = "\n".join(node_lines)
+    choice_digest = "\n".join(
+        f"- {choice.get('id')}：{choice.get('text')} -> {choice.get('nextNodeId')}"
+        for choice in node.get("choices", [])
+    ) or "- 本节点为 ending，无 choices"
+    ending_instruction = (
+        "这是结局节点。scene 不要只写一句收尾摘要，而要写成一个真正的结局场景。"
+        "请写 3 到 4 段，优先使用人物对白、动作和情绪反应来完成收束。"
+        "至少包含：最后一次对峙或确认、情绪落点、结局余波。"
+        "读感要像橙光结局页前的正式收尾，不要像系统结算文案。"
+    ) if node.get("kind") == "ending" else (
+        "这是普通回合节点。scene 写 2 到 3 段，重点放在当前冲突推进和情绪张力上。"
+    )
+    return (
+        f"{_build_json_story_node_instruction(repair_hint)}\n\n"
+        f"故事标题：{title}\n"
+        f"玩家身份：{role}\n"
+        f"故事开头：{opening}\n"
+        f"当前节点：{node.get('id')} ({node.get('kind')})\n"
+        f"当前节点阶段：{node.get('stageLabel')}\n"
+        f"当前节点摘要：{node.get('summary')}\n"
+        f"当前节点选项：\n{choice_digest}\n"
+        f"完整骨架：\n{skeleton_digest}\n"
+        "请只补全当前节点的正文，使它和骨架走向一致。"
+        "scene 要有文学阅读感，但不要过长，不要引入骨架之外的新主线。"
+        f"{ending_instruction}"
     )
 
 
@@ -155,13 +324,14 @@ def _compose_ending_analysis_prompt(opening: str, summary: str, transcript: list
         "不要讲大道理，不要空泛总结，要结合具体选择风格来判断。\n"
         "必须返回严格 JSON，不要使用 Markdown，不要使用代码块，不要添加 JSON 之外的任何文字。\n"
         "JSON 结构必须为："
-        '{"title":"土豆人格标题","romance":"感情向分析","life":"生活向分析","nextUniverseHook":"一句推荐下一个宇宙的钩子"}。\n\n'
+        '{"title":"土豆人格标题","personaTags":["标签1","标签2"],"romance":"感情向分析","life":"生活向分析","nextUniverseHook":"一句推荐下一个宇宙的钩子"}。\n\n'
         f"故事开头：{opening}\n"
         f"剧情结局摘要：{summary}\n"
         f"玩家实际选择：\n{action_lines or '- 暂无'}\n"
         f"故事状态：{json.dumps(state or {}, ensure_ascii=False)}\n\n"
         "要求："
         "title 要像测试结果名，简短有记忆点；"
+        "personaTags 返回 2 到 4 个简短中文标签；"
         "romance 要分析这个人谈感情时是什么风格；"
         "life 要分析这个人放到现实生活里像什么性格；"
         "nextUniverseHook 要像一句有趣的推荐语。"
@@ -192,6 +362,37 @@ async def _call_secondme_chat(access_token: str, prompt: str) -> str:
         raise HTTPException(
             status_code=502,
             detail={"message": "Unable to reach SecondMe chat API", "error": str(exc)},
+        ) from exc
+
+
+async def _call_secondme_act(access_token: str, message: str, action_control: str, max_tokens: int = 2000) -> str:
+    try:
+        async with httpx.AsyncClient(timeout=60, trust_env=False) as client:
+            act_response = await client.post(
+                "https://api.mindverse.com/gate/lab/api/secondme/act/stream",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "message": message,
+                    "actionControl": action_control,
+                    "maxTokens": max_tokens,
+                },
+            )
+            if act_response.status_code >= 400:
+                raise HTTPException(
+                    status_code=400,
+                    detail={"message": "SecondMe act request failed", "body": act_response.text},
+                )
+            action_text = _extract_story_from_sse(act_response.text)
+            if not action_text.strip():
+                raise HTTPException(status_code=400, detail="SecondMe act returned empty content")
+            return action_text
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"message": "Unable to reach SecondMe act API", "error": str(exc)},
         ) from exc
 
 
@@ -233,14 +434,287 @@ def _normalize_story_turn(raw_text: str) -> dict[str, Any]:
     }
 
 
+def _normalize_choice_effect_payload(payload: Any, fallback_style: str) -> dict[str, dict[str, int]]:
+    normalized = {"persona": {}, "relationship": {}}
+    if isinstance(payload, dict):
+        for category in ("persona", "relationship"):
+            category_payload = payload.get(category, {})
+            if isinstance(category_payload, dict):
+                normalized[category] = {
+                    _clean_model_text(key): int(value)
+                    for key, value in category_payload.items()
+                    if _clean_model_text(key) and isinstance(value, (int, float))
+                }
+    fallback = _choice_effects(fallback_style)
+    for category in ("persona", "relationship"):
+        if not normalized[category]:
+            normalized[category] = fallback.get(category, {})
+    return normalized
+
+
+def _normalize_story_package(raw_text: str, opening: str, role: str, persona_profile: dict[str, Any]) -> dict[str, Any]:
+    try:
+        payload = _extract_json_object(raw_text)
+    except HTTPException as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Story package JSON parse failed",
+                "body": raw_text,
+                "error": exc.detail if isinstance(exc.detail, dict) else str(exc.detail),
+            },
+        ) from exc
+
+    raw_nodes = payload.get("nodes", [])
+    if not isinstance(raw_nodes, list):
+        raise HTTPException(status_code=400, detail={"message": "Story package nodes must be an array", "body": raw_text})
+
+    nodes: list[dict[str, Any]] = []
+    for index, raw_node in enumerate(raw_nodes, start=1):
+        if not isinstance(raw_node, dict):
+            continue
+        node_id = _clean_model_text(raw_node.get("id", f"N{index}")) or f"N{index}"
+        kind = _clean_model_text(raw_node.get("kind", "turn")).lower()
+        if kind not in {"turn", "ending"}:
+            kind = "turn"
+        turn = raw_node.get("turn", index)
+        if not isinstance(turn, int):
+            turn = index
+        scene = _clean_model_text(raw_node.get("scene", ""))
+        if not scene:
+            continue
+        summary = _clean_model_text(raw_node.get("summary", "")) or scene
+        stage_label = _clean_model_text(raw_node.get("stageLabel", "剧情推进")) or "剧情推进"
+        director_note = _clean_model_text(raw_node.get("directorNote", ""))
+        raw_choices = raw_node.get("choices", [])
+        if not isinstance(raw_choices, list):
+            raw_choices = []
+        choices = []
+        if kind == "turn":
+            for choice_index, raw_choice in enumerate(raw_choices[:3], start=1):
+                if not isinstance(raw_choice, dict):
+                    continue
+                text = _clean_model_text(raw_choice.get("text", ""))
+                next_node_id = _clean_model_text(raw_choice.get("nextNodeId", ""))
+                if not text or not next_node_id:
+                    continue
+                style = _clean_model_text(raw_choice.get("style", "")) or _choice_style(text)
+                tone = _clean_model_text(raw_choice.get("tone", "")) or _choice_tone(text, style)
+                choices.append(
+                    {
+                        "id": _clean_model_text(raw_choice.get("id", f"{node_id}-C{choice_index}")) or f"{node_id}-C{choice_index}",
+                        "text": text,
+                        "nextNodeId": next_node_id,
+                        "style": style,
+                        "tone": tone,
+                        "effects": _normalize_choice_effect_payload(raw_choice.get("effects"), style),
+                    }
+                )
+        nodes.append(
+            {
+                "id": node_id,
+                "kind": kind,
+                "turn": turn,
+                "stageLabel": stage_label,
+                "directorNote": director_note,
+                "scene": scene,
+                "paragraphs": _split_scene_into_paragraphs(scene),
+                "summary": summary,
+                "choices": choices if kind == "turn" else [],
+            }
+        )
+
+    story_package = {
+        "version": PACKAGE_VERSION,
+        "title": _clean_model_text(payload.get("title", "")) or get_opening_title(opening) or "未命名互动宇宙",
+        "opening": opening,
+        "role": role,
+        "rootNodeId": _clean_model_text(payload.get("rootNodeId", "N1")) or "N1",
+        "nodes": nodes,
+        "initialState": {
+            "stage": "opening",
+            "flags": [],
+            "relationship": {"好感": 0, "信任": 0, "警惕": 0},
+            "persona": {"真诚": 0, "嘴硬": 0, "心机": 0, "胆量": 0},
+            "turn": 1,
+            "endingHint": "",
+        },
+    }
+    validation_error = _story_package_validation_error(story_package)
+    if validation_error:
+        raise HTTPException(status_code=400, detail={"message": validation_error, "body": raw_text})
+    return _finalize_story_package(story_package, persona_profile)
+
+
+def _normalize_story_skeleton(raw_text: str, opening: str, role: str) -> dict[str, Any]:
+    try:
+        payload = _extract_json_object(raw_text)
+    except HTTPException as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Story skeleton JSON parse failed",
+                "body": raw_text,
+                "error": exc.detail if isinstance(exc.detail, dict) else str(exc.detail),
+            },
+        ) from exc
+
+    raw_nodes = payload.get("nodes", [])
+    if not isinstance(raw_nodes, list):
+        raise HTTPException(status_code=400, detail={"message": "Story skeleton nodes must be an array", "body": raw_text})
+
+    nodes: list[dict[str, Any]] = []
+    for index, raw_node in enumerate(raw_nodes, start=1):
+        if not isinstance(raw_node, dict):
+            continue
+        node_id = _clean_model_text(raw_node.get("id", f"N{index}")) or f"N{index}"
+        kind = _clean_model_text(raw_node.get("kind", "turn")).lower()
+        if kind not in {"turn", "ending"}:
+            kind = "turn"
+        turn = raw_node.get("turn", index)
+        if not isinstance(turn, int):
+            turn = index
+        stage_label = _clean_model_text(raw_node.get("stageLabel", "剧情推进")) or "剧情推进"
+        director_note = _clean_model_text(raw_node.get("directorNote", ""))
+        summary = _clean_model_text(raw_node.get("summary", "")) or stage_label
+        raw_choices = raw_node.get("choices", [])
+        if not isinstance(raw_choices, list):
+            raw_choices = []
+        choices = []
+        if kind == "turn":
+            for choice_index, raw_choice in enumerate(raw_choices[:3], start=1):
+                if not isinstance(raw_choice, dict):
+                    continue
+                text = _clean_model_text(raw_choice.get("text", ""))
+                next_node_id = _clean_model_text(raw_choice.get("nextNodeId", ""))
+                if not text or not next_node_id:
+                    continue
+                style = _clean_model_text(raw_choice.get("style", "")) or _choice_style(text)
+                tone = _clean_model_text(raw_choice.get("tone", "")) or _choice_tone(text, style)
+                choices.append(
+                    {
+                        "id": _clean_model_text(raw_choice.get("id", f"{node_id}-C{choice_index}")) or f"{node_id}-C{choice_index}",
+                        "text": text,
+                        "nextNodeId": next_node_id,
+                        "style": style,
+                        "tone": tone,
+                        "effects": _normalize_choice_effect_payload(raw_choice.get("effects"), style),
+                    }
+                )
+        nodes.append(
+            {
+                "id": node_id,
+                "kind": kind,
+                "turn": turn,
+                "stageLabel": stage_label,
+                "directorNote": director_note,
+                "summary": summary,
+                "choices": choices if kind == "turn" else [],
+            }
+        )
+
+    skeleton = {
+        "version": PACKAGE_VERSION,
+        "title": _clean_model_text(payload.get("title", "")) or get_opening_title(opening) or "未命名互动宇宙",
+        "opening": opening,
+        "role": role,
+        "rootNodeId": _clean_model_text(payload.get("rootNodeId", "")),
+        "nodes": nodes,
+        "initialState": {
+            "stage": "opening",
+            "flags": [],
+            "relationship": {"好感": 0, "信任": 0, "警惕": 0},
+            "persona": {"真诚": 0, "嘴硬": 0, "心机": 0, "胆量": 0},
+            "turn": 1,
+            "endingHint": "",
+        },
+    }
+    validation_error = _story_package_validation_error(skeleton)
+    if validation_error:
+        raise HTTPException(status_code=400, detail={"message": validation_error, "body": raw_text})
+    return skeleton
+
+
+def _normalize_story_node_content(raw_text: str) -> dict[str, Any]:
+    try:
+        payload = _extract_json_object(raw_text)
+    except HTTPException as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Story node JSON parse failed",
+                "body": raw_text,
+                "error": exc.detail if isinstance(exc.detail, dict) else str(exc.detail),
+            },
+        ) from exc
+    scene = _clean_model_text(payload.get("scene", ""))
+    if not scene:
+        raise HTTPException(status_code=400, detail={"message": "Story node scene is missing", "body": raw_text})
+    stage_label = _clean_model_text(payload.get("stageLabel", "剧情推进")) or "剧情推进"
+    director_note = _clean_model_text(payload.get("directorNote", ""))
+    summary = _clean_model_text(payload.get("summary", "")) or scene
+    return {
+        "stageLabel": stage_label,
+        "directorNote": director_note,
+        "scene": scene,
+        "paragraphs": _split_scene_into_paragraphs(scene),
+        "summary": summary,
+    }
+
+
 def _normalize_ending_analysis(raw_text: str) -> dict[str, str]:
-    payload = _extract_json_object(raw_text)
+    try:
+        payload = _extract_json_object(raw_text)
+    except HTTPException:
+        payload = _extract_ending_analysis_payload_fallback(raw_text) or {}
     return {
         "title": _clean_model_text(payload.get("title", "")) or "你的土豆人格正在生成中",
+        "personaTags": [
+            _clean_model_text(item)
+            for item in payload.get("personaTags", [])
+            if _clean_model_text(item)
+        ] if isinstance(payload.get("personaTags"), list) else [],
         "romance": _clean_model_text(payload.get("romance", "")) or "这局里的你，显然不是随便点点选项的人。",
         "life": _clean_model_text(payload.get("life", "")) or "放到现实生活里，你大概也是那种会把故事过成连续剧的人。",
         "nextUniverseHook": _clean_model_text(payload.get("nextUniverseHook", "")) or "下一本宇宙，也许更适合你的那一面。"
     }
+
+
+def _extract_ending_analysis_payload_fallback(raw_text: str) -> dict[str, Any] | None:
+    cleaned = raw_text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`")
+        cleaned = cleaned.replace("json", "", 1).strip()
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    candidate = cleaned[start : end + 1]
+    keys = ["title", "personaTags", "romance", "life", "nextUniverseHook"]
+    extracted: dict[str, Any] = {}
+
+    for index, key in enumerate(keys):
+        marker = f'"{key}":'
+        start_index = candidate.find(marker)
+        if start_index == -1:
+            continue
+        value_start = start_index + len(marker)
+        next_start = len(candidate)
+        for next_key in keys[index + 1 :]:
+            next_marker = f',\n  "{next_key}":'
+            found = candidate.find(next_marker, value_start)
+            if found != -1:
+                next_start = found
+                break
+        raw_value = candidate[value_start:next_start].strip().rstrip(",").strip()
+        if key == "personaTags":
+            extracted[key] = _parse_loose_choices(raw_value)
+        else:
+            extracted[key] = _parse_loose_string_value(raw_value)
+
+    if not extracted:
+        return None
+    return extracted
 
 
 def _ensure_distinct_choices(choices: list[str], scene: str = "") -> list[str]:
@@ -416,7 +890,44 @@ def _find_session(session_id: str, user_id: str) -> tuple[list[dict[str, Any]], 
     raise HTTPException(status_code=404, detail="Story session not found")
 
 
+def _package_matches(session: dict[str, Any], user_id: str, opening: str, role: str) -> bool:
+    return (
+        session.get("userId") == user_id
+        and session.get("meta", {}).get("opening", "").strip() == opening.strip()
+        and session.get("meta", {}).get("role", "").strip() == role.strip()
+    )
+
+
+def _find_reusable_package(sessions: list[dict[str, Any]], user_id: str, opening: str, role: str) -> dict[str, Any] | None:
+    for item in sessions:
+        if not _package_matches(item, user_id, opening, role):
+            continue
+        if item.get("kind") != "story_package":
+            continue
+        if item.get("packageStatus") not in {"ready", "hydrating"}:
+            continue
+        package = item.get("package", {})
+        if package.get("version") != PACKAGE_VERSION:
+            continue
+        if package.get("generatedBy") != "secondme_act_two_stage":
+            continue
+        return item
+    return None
+
+
 def _serialize_session(session: dict[str, Any]) -> dict[str, Any]:
+    if session.get("kind") == "story_package":
+        return {
+            "id": session["id"],
+            "kind": "story_package",
+            "createdAt": session["createdAt"],
+            "updatedAt": session["updatedAt"],
+            "status": session.get("status", "ready"),
+            "packageStatus": session.get("packageStatus", "ready"),
+            "meta": session.get("meta", {}),
+            "package": session.get("package", {}),
+            "completedRun": session.get("completedRun"),
+        }
     return {
         "id": session["id"],
         "createdAt": session["createdAt"],
@@ -446,6 +957,12 @@ def _serialize_session(session: dict[str, Any]) -> dict[str, Any]:
 
 
 def _build_story_from_session(session: dict[str, Any]) -> str:
+    if session.get("kind") == "story_package":
+        completed_run = session.get("completedRun")
+        if not completed_run:
+            raise HTTPException(status_code=400, detail="Story package has not been completed")
+        return _build_story_from_completed_run(session, completed_run)
+
     title = get_opening_title(session["meta"].get("opening", "")) or "未命名故事"
     lines = [
         f"《{title}：互动版》",
@@ -473,6 +990,42 @@ def _build_story_from_session(session: dict[str, Any]) -> str:
                 f"阶段：{state.get('stage', '')}",
                 f"旗标：{', '.join(state.get('flags', [])) or '无'}",
                 f"关系：{json.dumps(state.get('relationship', {}), ensure_ascii=False)}",
+                "",
+            ]
+        )
+    return "\n".join(lines).strip()
+
+
+def _build_story_from_completed_run(session: dict[str, Any], completed_run: dict[str, Any]) -> str:
+    title = session.get("package", {}).get("title") or get_opening_title(session["meta"].get("opening", "")) or "未命名故事"
+    lines = [
+        f"《{title}：互动版》",
+        f"玩家身份：{session['meta'].get('role', '')}",
+        f"创作者：{session['meta'].get('author', '')}",
+        "",
+        "【故事开端】",
+        session["meta"].get("opening", ""),
+        "",
+    ]
+    for item in completed_run.get("transcript", []):
+        label = item.get("label", "事件")
+        turn = item.get("turn")
+        prefix = f"第 {turn} 回合" if turn else "故事片段"
+        lines.append(f"【{prefix}·{label}】")
+        lines.append(_clean_model_text(item.get("text", "")))
+        lines.append("")
+    summary = _clean_model_text(completed_run.get("summary", ""))
+    if summary:
+        lines.extend(["【结局摘要】", summary, ""])
+    state = completed_run.get("state", {})
+    if state:
+        lines.extend(
+            [
+                "【结局状态】",
+                f"阶段：{state.get('stage', '')}",
+                f"旗标：{', '.join(state.get('flags', [])) or '无'}",
+                f"关系：{json.dumps(state.get('relationship', {}), ensure_ascii=False)}",
+                f"人格：{json.dumps(state.get('persona', {}), ensure_ascii=False)}",
                 "",
             ]
         )
@@ -594,6 +1147,31 @@ def _choice_effects(style: str) -> dict[str, dict[str, int]]:
     }
 
 
+def _merge_state_delta(state: dict[str, Any], effects: dict[str, dict[str, int]], next_turn: int, stage: str, ending_hint: str = "") -> dict[str, Any]:
+    next_state = {
+        "stage": stage,
+        "flags": list(state.get("flags", [])),
+        "relationship": dict(state.get("relationship", {})),
+        "persona": dict(state.get("persona", {})),
+        "turn": next_turn,
+        "endingHint": ending_hint,
+    }
+    for category in ("persona", "relationship"):
+        for key, value in effects.get(category, {}).items():
+            next_state[category][key] = next_state[category].get(key, 0) + int(value)
+    return next_state
+
+
+def _infer_stage_from_turn(turn_count: int, total_turns: int, kind: str) -> str:
+    if kind == "ending":
+        return "ending"
+    if turn_count <= 1:
+        return "opening"
+    if turn_count >= max(total_turns - 1, 3):
+        return "climax"
+    return "conflict"
+
+
 def _build_choice_objects(choice_texts: list[str], persona_profile: dict[str, Any]) -> tuple[list[dict[str, Any]], str, str]:
     preferred_styles = persona_profile.get("preferredStyles", [])
     choice_objects = []
@@ -627,6 +1205,532 @@ def _build_choice_objects(choice_texts: list[str], persona_profile: dict[str, An
         if choice["id"] == ai_choice_id:
             choice["isAiChoice"] = True
     return choice_objects, recommended_choice_id, ai_choice_id
+
+
+def _finalize_story_package(story_package: dict[str, Any], persona_profile: dict[str, Any]) -> dict[str, Any]:
+    story_package["version"] = PACKAGE_VERSION
+    story_package["generatedBy"] = "secondme_act_two_stage"
+    nodes = story_package.get("nodes", [])
+    node_map = {node["id"]: node for node in nodes}
+    playable_count = sum(1 for node in nodes if node.get("kind") == "turn")
+    for node in nodes:
+        if node.get("kind") != "turn":
+            continue
+        choice_objects = []
+        raw_choices = node.get("choices", [])
+        if not raw_choices:
+            continue
+        choice_payloads = [choice.get("text", "") for choice in raw_choices]
+        recommendation_basis, _, _ = _build_choice_objects(choice_payloads, persona_profile)
+        for index, choice in enumerate(raw_choices, start=1):
+            style = choice.get("style") or _choice_style(choice.get("text", ""))
+            tone = choice.get("tone") or _choice_tone(choice.get("text", ""), style)
+            normalized_choice = {
+                "id": choice.get("id") or f"{node['id']}-C{index}",
+                "text": _clean_model_text(choice.get("text", "")),
+                "nextNodeId": _clean_model_text(choice.get("nextNodeId", "")),
+                "style": style,
+                "tone": tone,
+                "effects": _normalize_choice_effect_payload(choice.get("effects"), style),
+                "isRecommended": False,
+                "isAiChoice": False,
+            }
+            basis = recommendation_basis[index - 1] if index - 1 < len(recommendation_basis) else {}
+            normalized_choice["isRecommended"] = bool(basis.get("isRecommended"))
+            normalized_choice["isAiChoice"] = bool(basis.get("isAiChoice"))
+            choice_objects.append(normalized_choice)
+        node["choices"] = choice_objects
+        node["turn"] = int(node.get("turn", 1))
+        node["stage"] = _infer_stage_from_turn(node["turn"], playable_count, "turn")
+        for choice in node["choices"]:
+            next_node = node_map.get(choice["nextNodeId"])
+            if next_node and next_node.get("kind") == "ending":
+                choice["effects"]["relationship"] = {
+                    **choice["effects"].get("relationship", {}),
+                }
+    story_package["playableTurnCount"] = playable_count
+    story_package["endingNodeIds"] = [node["id"] for node in nodes if node.get("kind") == "ending"]
+    return story_package
+
+
+def _validate_story_package(story_package: dict[str, Any]) -> bool:
+    return _story_package_validation_error(story_package) is None
+
+
+def _story_package_validation_error(story_package: dict[str, Any]) -> str | None:
+    nodes = story_package.get("nodes", [])
+    if not isinstance(nodes, list) or not nodes:
+        return "Story package must contain nodes"
+    node_map = {node.get("id"): node for node in nodes if node.get("id")}
+    root_node_id = story_package.get("rootNodeId")
+    if root_node_id not in node_map:
+        return "rootNodeId must point to an existing node"
+    playable_nodes = [node for node in nodes if node.get("kind") == "turn"]
+    ending_nodes = [node for node in nodes if node.get("kind") == "ending"]
+    if not (4 <= len(playable_nodes) <= 7):
+        return "Story package must contain 4 to 7 playable turn nodes"
+    if len(ending_nodes) != 3:
+        return "Story package must contain exactly 3 ending nodes"
+    path_depths: list[int] = []
+    stack: list[tuple[str, int]] = [(root_node_id, 1)]
+    visited_depth: set[tuple[str, int]] = set()
+    while stack:
+        node_id, depth = stack.pop()
+        if (node_id, depth) in visited_depth:
+            continue
+        visited_depth.add((node_id, depth))
+        node = node_map.get(node_id)
+        if not node:
+            continue
+        if node.get("kind") == "ending":
+            path_depths.append(depth)
+            continue
+        for choice in node.get("choices", []):
+            next_node_id = choice.get("nextNodeId")
+            next_node = node_map.get(next_node_id)
+            if not next_node_id or not next_node:
+                continue
+            next_depth = depth if next_node.get("kind") == "ending" else depth + 1
+            stack.append((next_node_id, next_depth))
+    if not path_depths:
+        return "No ending path depth found from rootNodeId"
+    if min(path_depths) < 2 or max(path_depths) > 4:
+        return "Each playable path must reach an ending after 2 to 4 turn nodes"
+    for node in playable_nodes:
+        choices = node.get("choices", [])
+        if len(choices) != 3:
+            return f"Turn node {node.get('id', 'unknown')} must contain exactly 3 choices"
+        for choice in choices:
+            if not _clean_model_text(choice.get("text", "")):
+                return f"Choice text is missing in node {node.get('id', 'unknown')}"
+            if _clean_model_text(choice.get("nextNodeId", "")) not in node_map:
+                return f"Choice nextNodeId is invalid in node {node.get('id', 'unknown')}"
+
+    visited = set()
+    stack = [root_node_id]
+    reached_ending = False
+    while stack:
+        node_id = stack.pop()
+        if node_id in visited:
+            continue
+        visited.add(node_id)
+        node = node_map.get(node_id)
+        if not node:
+            return f"Node {node_id} is missing from node map"
+        if node.get("kind") == "ending":
+            reached_ending = True
+            continue
+        for choice in node.get("choices", []):
+            next_node_id = choice.get("nextNodeId")
+            if next_node_id and next_node_id not in visited:
+                stack.append(next_node_id)
+    if not reached_ending:
+        return "No reachable ending node found from rootNodeId"
+    return None
+
+
+def _initial_hydrate_node_ids(skeleton: dict[str, Any]) -> set[str]:
+    node_map = {node.get("id"): node for node in skeleton.get("nodes", [])}
+    root_node_id = skeleton.get("rootNodeId")
+    hydrate_ids: set[str] = set()
+    if root_node_id and root_node_id in node_map:
+        hydrate_ids.add(root_node_id)
+        root_node = node_map[root_node_id]
+        for choice in root_node.get("choices", []):
+            next_node_id = choice.get("nextNodeId")
+            if next_node_id in node_map:
+                hydrate_ids.add(next_node_id)
+    return hydrate_ids
+
+
+async def _hydrate_story_package_nodes(
+    session_record: dict[str, Any],
+    access_token: str,
+    opening: str,
+    role: str,
+) -> dict[str, Any]:
+    package = session_record.get("package", {})
+    skeleton_nodes = package.get("nodes", [])
+    pending_nodes = [node for node in skeleton_nodes if not node.get("loaded")]
+    if not pending_nodes:
+        package["hydratedNodeIds"] = sorted({node.get("id") for node in skeleton_nodes if node.get("id")})
+        return package
+
+    hydrated_ids = set(package.get("hydratedNodeIds", []))
+    for node in skeleton_nodes:
+        if node.get("loaded") and node.get("id"):
+            hydrated_ids.add(node["id"])
+
+    updated_nodes: list[dict[str, Any]] = []
+    for node in skeleton_nodes:
+        if node.get("loaded"):
+            updated_nodes.append(node)
+            continue
+        content = await _generate_story_node_content(
+            access_token=access_token,
+            opening=opening,
+            role=role,
+            title=package.get("title", ""),
+            skeleton_nodes=skeleton_nodes,
+            node=node,
+        )
+        hydrated_ids.add(node.get("id"))
+        updated_nodes.append(
+            {
+                **node,
+                "stageLabel": content.get("stageLabel") or node.get("stageLabel", "剧情推进"),
+                "directorNote": content.get("directorNote") or node.get("directorNote", ""),
+                "scene": content["scene"],
+                "paragraphs": content["paragraphs"],
+                "summary": content.get("summary") or node.get("summary", ""),
+                "loaded": True,
+            }
+        )
+
+    package["nodes"] = updated_nodes
+    package["hydratedNodeIds"] = sorted(hydrated_ids)
+    return _finalize_story_package(package, session_record.get("personaProfile", {}))
+
+
+async def _generate_story_skeleton(
+    access_token: str,
+    opening: str,
+    role: str,
+    user_name: str,
+    persona_profile: dict[str, Any],
+) -> dict[str, Any]:
+    last_error: HTTPException | None = None
+    for attempt in range(3):
+        repair_hint = ""
+        if last_error is not None:
+            detail = last_error.detail if isinstance(last_error.detail, dict) else {"message": str(last_error.detail)}
+            reason = detail.get("message", "unknown error")
+            count_fix = ""
+            if "4 to 7 playable turn nodes" in reason:
+                count_fix = "你上一次的 turn 节点数量不对。这次请把整个分支图控制在 4 到 7 个 turn 节点内。"
+            elif "exactly 3 ending nodes" in reason:
+                count_fix = "你上一次的 ending 节点数量不对。这次必须固定输出 3 个 ending 节点，不要多也不要少。"
+            elif "2 to 4 turn nodes" in reason:
+                count_fix = "你上一次的单条游玩路径太短或太长了。这次必须让用户在 2 到 4 个 turn 节点后进入结局。"
+            repair_hint = f"上一次骨架输出失败，失败原因：{reason}。{count_fix}这次必须修正。"
+        prompt = _compose_story_skeleton_prompt(
+            opening=opening,
+            role=role,
+            user_name=user_name,
+            persona_profile=persona_profile,
+            repair_hint=repair_hint,
+        )
+        raw_text = await _call_secondme_act(
+            access_token=access_token,
+            message=f"请为这个故事生成互动骨架：{opening}",
+            action_control=prompt,
+            max_tokens=4000,
+        )
+        try:
+            return _normalize_story_skeleton(raw_text, opening=opening, role=role)
+        except HTTPException as exc:
+            print(
+                "[story-skeleton-debug]",
+                json.dumps(
+                    {
+                        "attempt": attempt + 1,
+                        "opening": opening[:80],
+                        "role": role,
+                        "error": exc.detail,
+                        "raw": raw_text,
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+            last_error = exc
+    detail = last_error.detail if last_error is not None and isinstance(last_error.detail, dict) else {"message": "Story skeleton generation failed"}
+    raise HTTPException(
+        status_code=502,
+        detail={
+            "message": "SecondMe returned an invalid story skeleton after 3 attempts",
+            "reason": detail.get("message"),
+        },
+    )
+
+
+async def _generate_story_node_content(
+    access_token: str,
+    opening: str,
+    role: str,
+    title: str,
+    skeleton_nodes: list[dict[str, Any]],
+    node: dict[str, Any],
+) -> dict[str, Any]:
+    last_error: HTTPException | None = None
+    for attempt in range(3):
+        repair_hint = ""
+        if last_error is not None:
+            detail = last_error.detail if isinstance(last_error.detail, dict) else {"message": str(last_error.detail)}
+            repair_hint = f"上一次节点正文输出失败，失败原因：{detail.get('message', 'unknown error')}。这次必须修正。"
+        prompt = _compose_story_node_prompt(
+            opening=opening,
+            role=role,
+            title=title,
+            skeleton_nodes=skeleton_nodes,
+            node=node,
+            repair_hint=repair_hint,
+        )
+        raw_text = await _call_secondme_act(
+            access_token=access_token,
+            message=f"请补全节点 {node.get('id')} 的正文",
+            action_control=prompt,
+            max_tokens=2500,
+        )
+        try:
+            return _normalize_story_node_content(raw_text)
+        except HTTPException as exc:
+            print(
+                "[story-node-debug]",
+                json.dumps(
+                    {
+                        "attempt": attempt + 1,
+                        "nodeId": node.get("id"),
+                        "role": role,
+                        "error": exc.detail,
+                        "raw": raw_text,
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+            last_error = exc
+    detail = last_error.detail if last_error is not None and isinstance(last_error.detail, dict) else {"message": "Story node generation failed"}
+    raise HTTPException(
+        status_code=502,
+        detail={
+            "message": f"SecondMe returned invalid node content for {node.get('id')} after 3 attempts",
+            "reason": detail.get("message"),
+        },
+    )
+
+
+async def _build_story_package_two_stage(
+    access_token: str,
+    opening: str,
+    role: str,
+    user_name: str,
+    persona_profile: dict[str, Any],
+    hydrate_node_ids: set[str] | None = None,
+) -> dict[str, Any]:
+    skeleton = await _generate_story_skeleton(
+        access_token=access_token,
+        opening=opening,
+        role=role,
+        user_name=user_name,
+        persona_profile=persona_profile,
+    )
+    skeleton_nodes = skeleton.get("nodes", [])
+    if hydrate_node_ids is None:
+        hydrate_node_ids = {node.get("id") for node in skeleton_nodes if node.get("id")}
+    elif not hydrate_node_ids:
+        hydrate_node_ids = _initial_hydrate_node_ids(skeleton)
+    completed_nodes: list[dict[str, Any]] = []
+    for node in skeleton_nodes:
+        if node.get("id") in hydrate_node_ids:
+            content = await _generate_story_node_content(
+                access_token=access_token,
+                opening=opening,
+                role=role,
+                title=skeleton.get("title", ""),
+                skeleton_nodes=skeleton_nodes,
+                node=node,
+            )
+            completed_nodes.append(
+                {
+                    **node,
+                    "stageLabel": content.get("stageLabel") or node.get("stageLabel", "剧情推进"),
+                    "directorNote": content.get("directorNote") or node.get("directorNote", ""),
+                    "scene": content["scene"],
+                    "paragraphs": content["paragraphs"],
+                    "summary": content.get("summary") or node.get("summary", ""),
+                    "loaded": True,
+                }
+            )
+        else:
+            completed_nodes.append(
+                {
+                    **node,
+                    "scene": "",
+                    "paragraphs": [],
+                    "loaded": False,
+                }
+            )
+    package = {
+        **skeleton,
+        "nodes": completed_nodes,
+        "hydratedNodeIds": sorted(hydrate_node_ids),
+    }
+    validation_error = _story_package_validation_error(package)
+    if validation_error:
+        raise HTTPException(status_code=400, detail={"message": validation_error})
+    return _finalize_story_package(package, persona_profile)
+
+
+def _create_fallback_story_package(opening: str, role: str, persona_profile: dict[str, Any]) -> dict[str, Any]:
+    title = get_opening_title(opening) or "未命名互动宇宙"
+    opening_summary = get_opening_summary(opening) or opening.split("\n")[0].strip() or opening
+    soft_text = "我放轻声音：“你先别躲，我想知道这件事里，你最怕我看见的到底是什么。”"
+    tease_text = "我偏头笑了一下：“你把气氛搞得这么暧昧，我要是再装傻，是不是就太不给面子了？”"
+    hard_text = "我抬眼盯住他：“既然都把我逼到这一步了，那你就别想再含糊过去。”"
+
+    nodes = [
+        {
+            "id": "N1",
+            "kind": "turn",
+            "turn": 1,
+            "stageLabel": "第一幕·风暴前夜",
+            "directorNote": "局势刚被掀开，你需要决定自己是软接、试探还是硬顶。",
+            "scene": (
+                f"故事刚从这句开头掀开帘子：{opening_summary}。"
+                f"以“{role}”身份站在这场风暴中央的我，已经隐约意识到眼前这段关系并没有表面上那么简单。\n\n"
+                "对面的人显然也在等我表态，他没有催促，却把沉默拉得很长，像是在逼我先交底。\n\n"
+                "空气里有一点危险，也有一点过分暧昧的预兆。只要我说错一句话，接下来的每一步都会彻底改写走向。"
+            ),
+            "summary": "故事开场，主角第一次正面碰上真正的关系裂口，必须选定自己的回应方式。",
+            "choices": [
+                {"id": "N1-C1", "text": soft_text, "nextNodeId": "N2-soft", "style": "soft", "tone": "温柔", "effects": _choice_effects("soft")},
+                {"id": "N1-C2", "text": tease_text, "nextNodeId": "N2-tease", "style": "tease", "tone": "撩拨", "effects": _choice_effects("tease")},
+                {"id": "N1-C3", "text": hard_text, "nextNodeId": "N2-hard", "style": "confrontation", "tone": "强势", "effects": _choice_effects("confrontation")},
+            ],
+        },
+        {
+            "id": "N2-soft",
+            "kind": "turn",
+            "turn": 2,
+            "stageLabel": "第二幕·软着陆",
+            "directorNote": "你让对方稍微放下戒心，但更深的真相也跟着浮上来。",
+            "scene": "我先把锋芒收了回来，对方明显愣了一下，像是没料到我会这样温柔。那一瞬间，他眼底压着的委屈竟然比怒气更先冒出来。\n\n他沉默了很久，像是在判断我这次是不是又只是一时兴起。可越是这样，我越能感觉到，这段关系真正危险的地方从来不是争吵，而是那些一直没人说破的真心。\n\n他终于低声开口，说出口的却不是解释，而是一句带着旧伤的反问：如果我现在把真相全告诉你，你还会站在我这边吗？",
+            "summary": "温柔路线让对方先露出脆弱，但也逼出了站队问题。",
+            "choices": [
+                {"id": "N2-soft-C1", "text": "我靠近半步：“你把话说完，我可以先不替自己辩解。”", "nextNodeId": "N3-confession", "style": "support", "tone": "安抚", "effects": _choice_effects("support")},
+                {"id": "N2-soft-C2", "text": "我垂下眼睫，故意轻声追问：“所以你一直没走，是舍不得，还是不甘心？”", "nextNodeId": "N3-confession", "style": "tease", "tone": "试探", "effects": _choice_effects("tease")},
+                {"id": "N2-soft-C3", "text": "我没有立刻回答，只是先记下他每一次神色变化，想判断他有没有藏更深的事。", "nextNodeId": "N3-secret", "style": "observation", "tone": "克制", "effects": _choice_effects("observation")},
+            ],
+        },
+        {
+            "id": "N2-tease",
+            "kind": "turn",
+            "turn": 2,
+            "stageLabel": "第二幕·暧昧试探",
+            "directorNote": "你把局面拉到了更靠近心动的边缘，但也可能让对方以为你仍在玩笑。",
+            "scene": "我把语气放得轻快了一点，像是在刀尖上故意转了个圈。对面的人果然被我晃得怔住，呼吸都乱了一瞬。\n\n可这种撩拨式的退让并不完全安全，因为只要我再多装作若无其事一点，他就会重新怀疑我是不是根本不认真。\n\n他看着我，像是在等我接下来到底会继续逗他，还是终于给出一句能落地的话。",
+            "summary": "暧昧路线把张力推高，但认真与不认真之间只差一步。",
+            "choices": [
+                {"id": "N2-tease-C1", "text": "我抬手替他理了一下衣领：“你都快把心事写脸上了，还要我继续猜吗？”", "nextNodeId": "N3-confession", "style": "tease", "tone": "撩拨", "effects": _choice_effects("tease")},
+                {"id": "N2-tease-C2", "text": "我忽然认真起来：“如果你愿意说实话，这次我不会再笑着糊弄过去。”", "nextNodeId": "N3-confession", "style": "trust", "tone": "真诚", "effects": _choice_effects("trust")},
+                {"id": "N2-tease-C3", "text": "我顺势把话题拐开，想先套出他背后还有没有别人参与。", "nextNodeId": "N3-secret", "style": "strategy", "tone": "心机", "effects": _choice_effects("strategy")},
+            ],
+        },
+        {
+            "id": "N2-hard",
+            "kind": "turn",
+            "turn": 2,
+            "stageLabel": "第二幕·正面冲撞",
+            "directorNote": "强势能逼出真相，也可能把关系直接推向悬崖边。",
+            "scene": "我没有给他退路，连语气都像是把最后一层遮羞布一起掀开。对面的人被我逼得下颌绷紧，眼神里那点克制终于开始裂开。\n\n他显然也有情绪，只是以前一直在忍。现在被我这样顶着逼问，他反而像是终于找到了失控的理由。\n\n可就在气氛快要彻底炸开的那一刻，我看见他眼底闪过一丝很轻的难过，那不像厌烦，反而像被我伤过太久。", 
+            "summary": "强碰强之后，真正暴露出来的可能不是敌意，而是被压久了的感情伤口。",
+            "choices": [
+                {"id": "N2-hard-C1", "text": "我还是不退：“你可以生气，但你得把理由一字一句说清楚。”", "nextNodeId": "N3-secret", "style": "confrontation", "tone": "强势", "effects": _choice_effects("confrontation")},
+                {"id": "N2-hard-C2", "text": "我忽然放缓一点：“如果我真的伤到你，那你至少要让我知道我错在哪。”", "nextNodeId": "N3-confession", "style": "soft", "tone": "松动", "effects": _choice_effects("soft")},
+                {"id": "N2-hard-C3", "text": "我盯着他的反应，决定先逼他暴露更多，再决定要不要退。", "nextNodeId": "N3-secret", "style": "manipulation", "tone": "压迫", "effects": _choice_effects("manipulation")},
+            ],
+        },
+        {
+            "id": "N3-confession",
+            "kind": "turn",
+            "turn": 3,
+            "stageLabel": "第三幕·真心外露",
+            "directorNote": "对方已经快说到心口，接下来要决定你是接住，还是继续追问。",
+            "scene": "终于，他像是被我逼到再也装不下去，低声承认自己不是没感觉，而是一直不敢相信我会认真。那些被我忽略过的细节，此刻都突然有了另外一种解释。\n\n他越说越乱，像是把忍了很久的话一次全倒出来。原来这段关系真正卡住的，从来不是谁更会演，而是谁更害怕先承认自己动心。\n\n我听着他呼吸发紧，忽然明白只要再往前半步，故事就会从拉扯转成真正的选择题。", 
+            "summary": "对方半告白，感情被端上台面，主角迎来真正的回应节点。",
+            "choices": [
+                {"id": "N3-confession-C1", "text": "我伸手握住他：“那这次换我认真一点，不让你一个人撑着。”", "nextNodeId": "N4-climax", "style": "trust", "tone": "真诚", "effects": _choice_effects("trust")},
+                {"id": "N3-confession-C2", "text": "我弯起眼睛：“你都说到这一步了，再嘴硬就太可惜了吧？”", "nextNodeId": "N4-climax", "style": "tease", "tone": "撩拨", "effects": _choice_effects("tease")},
+                {"id": "N3-confession-C3", "text": "我没有立刻接住告白，反而追问他是不是还瞒了我别的真相。", "nextNodeId": "N4-climax", "style": "strategy", "tone": "追查", "effects": _choice_effects("strategy")},
+            ],
+        },
+        {
+            "id": "N3-secret",
+            "kind": "turn",
+            "turn": 3,
+            "stageLabel": "第三幕·暗线浮出",
+            "directorNote": "局势开始转向反转兑现，你的一念之间会决定这是修罗场还是表白局。",
+            "scene": "我没有急着接情绪，而是继续顺着裂缝往下挖。果然，更多没说出口的暗线一点点浮了上来，有误会，也有他刻意替我挡下的麻烦。\n\n越听下去，我越难分清自己现在是生气多一点，还是心软多一点。因为那些被我当成理所当然的纵容，原来全都不是白给。\n\n他见我沉默，像是误会了我的反应，眼神又重新冷下来，仿佛已经做好最坏打算。", 
+            "summary": "暗线被翻出，误会与保护并存，故事进入临门一脚的反转前夜。",
+            "choices": [
+                {"id": "N3-secret-C1", "text": "我忽然上前一步：“你替我挡了这么多事，凭什么现在还想装没发生过？”", "nextNodeId": "N4-climax", "style": "confrontation", "tone": "强压", "effects": _choice_effects("confrontation")},
+                {"id": "N3-secret-C2", "text": "我轻声问他：“你做这些，是因为责任，还是因为舍不得我受一点委屈？”", "nextNodeId": "N4-climax", "style": "soft", "tone": "轻问", "effects": _choice_effects("soft")},
+                {"id": "N3-secret-C3", "text": "我决定暂时不拆穿全部情绪，先把最后一层关键真相也逼出来。", "nextNodeId": "N4-climax", "style": "manipulation", "tone": "控场", "effects": _choice_effects("manipulation")},
+            ],
+        },
+        {
+            "id": "N4-climax",
+            "kind": "turn",
+            "turn": 4,
+            "stageLabel": "第四幕·结局前一秒",
+            "directorNote": "你已经走到结局门口，最后一句话会决定这是告白、和解还是擦肩。",
+            "scene": "所有误会、暧昧和没说完的话都被推到了最后一秒。眼前的人不再回避，像是把最后的选择权真正交到了我手里。\n\n他看着我，神情里带着一点压不住的紧张，也带着一种“只要你点头我就不退了”的决绝。到这一步，连沉默都像答案。\n\n我知道，只要现在开口，这个宇宙就会被我亲手按向某种结局。", 
+            "summary": "结局门打开，最后一句回应决定这段关系会落到哪一种宇宙。",
+            "choices": [
+                {"id": "N4-C1", "text": "我抱住他，认真承认：“这次轮到我追着你走了。”", "nextNodeId": "E-sweet", "style": "trust", "tone": "告白", "effects": _choice_effects("trust")},
+                {"id": "N4-C2", "text": "我抵着他的肩笑：“你先别得意，我们可以从重新认识开始。”", "nextNodeId": "E-slowburn", "style": "tease", "tone": "暧昧", "effects": _choice_effects("tease")},
+                {"id": "N4-C3", "text": "我后退半步：“我得先把自己理清楚，今天先到这里。”", "nextNodeId": "E-open", "style": "observation", "tone": "克制", "effects": _choice_effects("observation")},
+            ],
+        },
+        {
+            "id": "E-sweet",
+            "kind": "ending",
+            "turn": 5,
+            "stageLabel": "结局·糖分超标",
+            "directorNote": "高好感路线达成。",
+            "scene": "我抱上去的那一秒，他明显怔住了，随即像是松开了整整一个宇宙的戒备。那些原本会继续拉扯很久的误会，终于在这一刻被真正接住。\n\n他低声笑了一下，像终于等到这句承认太久，连眼底都亮起来。故事没有轰轰烈烈地收尾，却像有人替这段关系轻轻盖了章：从今天开始，我们不再只靠试探相爱。",
+            "summary": "你选择直球接住感情，这个宇宙以高好感的双向奔赴收束。",
+            "choices": [],
+        },
+        {
+            "id": "E-slowburn",
+            "kind": "ending",
+            "turn": 5,
+            "stageLabel": "结局·暧昧续杯",
+            "directorNote": "慢热但极有后劲的结局。",
+            "scene": "我没有把话说满，却把退路也留给了彼此。对面的人先是一怔，随后像终于明白我不是拒绝，只是想把这段关系重新写一遍。\n\n他看着我笑，眼底那点紧绷终于慢慢散开。这个宇宙没有立刻官宣式落幕，却像一杯刚刚续上的热饮，知道后劲会越来越长。",
+            "summary": "你没有一口气跳进结局，而是选择把关系留在最有余温的慢热区。",
+            "choices": [],
+        },
+        {
+            "id": "E-open",
+            "kind": "ending",
+            "turn": 5,
+            "stageLabel": "结局·先把自己找回来",
+            "directorNote": "克制路线达成开放式结局。",
+            "scene": "我还是给自己留了一步距离。那不是彻底退场，而是终于愿意承认，真正的靠近不能只靠一时上头。\n\n他没有强留，只是看着我点了点头，像在说这一次他愿意把选择权交还给我。于是这个宇宙停在了不算圆满、却足够诚实的位置：如果以后再见，我们会以更清醒的样子重新开始。",
+            "summary": "你把关系按在开放式收束上，没有强行圆满，却保住了自己的节奏。",
+            "choices": [],
+        },
+    ]
+    story_package = {
+        "version": PACKAGE_VERSION,
+        "title": title,
+        "opening": opening,
+        "role": role,
+        "rootNodeId": "N1",
+        "nodes": nodes,
+        "initialState": {
+            "stage": "opening",
+            "flags": [],
+            "relationship": {"好感": 0, "信任": 0, "警惕": 0},
+            "persona": {"真诚": 0, "嘴硬": 0, "心机": 0, "胆量": 0},
+            "turn": 1,
+            "endingHint": "",
+        },
+    }
+    return _finalize_story_package(story_package, persona_profile)
 
 
 def _infer_stage(turn_count: int, status: str) -> str:
@@ -689,6 +1793,91 @@ def _update_story_state(previous_state: dict[str, Any], action: str, choice_text
 
 def _recent_transcript_window(transcript: list[dict[str, Any]], limit: int = 8) -> list[dict[str, Any]]:
     return transcript[-limit:]
+
+
+def _build_completed_run_from_payload(payload: dict[str, Any], session: dict[str, Any]) -> dict[str, Any]:
+    completed_run = payload.get("completedRun", payload)
+    if not isinstance(completed_run, dict):
+        raise HTTPException(status_code=400, detail="Missing completedRun payload")
+    transcript = completed_run.get("transcript", [])
+    if not isinstance(transcript, list):
+        transcript = []
+    state = completed_run.get("state", {})
+    if not isinstance(state, dict):
+        state = {}
+    ending_node_id = _clean_model_text(completed_run.get("endingNodeId", ""))
+    package = session.get("package", {})
+    node_map = {node.get("id"): node for node in package.get("nodes", [])}
+    ending_node = node_map.get(ending_node_id)
+    if not ending_node or ending_node.get("kind") != "ending":
+        raise HTTPException(status_code=400, detail="Completed run must point to an ending node")
+    return {
+        "currentNodeId": ending_node_id,
+        "endingNodeId": ending_node_id,
+        "summary": _clean_model_text(completed_run.get("summary", "")) or _clean_model_text(ending_node.get("summary", "")),
+        "transcript": [
+            {
+                "turn": item.get("turn"),
+                "label": _clean_model_text(item.get("label", "")),
+                "text": _clean_model_text(item.get("text", "")),
+            }
+            for item in transcript
+            if isinstance(item, dict) and _clean_model_text(item.get("text", ""))
+        ],
+        "state": state,
+        "path": completed_run.get("path", []),
+        "completedAt": int(time.time()),
+    }
+
+
+async def _create_or_reuse_story_package(body: dict[str, Any], server_session: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    opening = body.get("opening", "").strip()
+    role = body.get("role", "").strip()
+    force_regenerate = bool(body.get("forceRegenerate"))
+    if not opening or not role:
+        raise HTTPException(status_code=400, detail="Missing opening or role")
+
+    user = server_session["user"]
+    sessions = _load_sessions()
+    if not force_regenerate:
+        reusable = _find_reusable_package(sessions, user.get("userId"), opening, role)
+        if reusable:
+            return reusable, True
+
+    access_token = server_session["token"]["access_token"]
+    persona_profile = _derive_persona_profile(user)
+    story_package = await _build_story_package_two_stage(
+        access_token=access_token,
+        opening=opening,
+        role=role,
+        user_name=user.get("name") or "SecondMe 用户",
+        persona_profile=persona_profile,
+        hydrate_node_ids=set(),
+    )
+    all_node_ids = {node.get("id") for node in story_package.get("nodes", []) if node.get("id")}
+    hydrated_node_ids = set(story_package.get("hydratedNodeIds", []))
+
+    now = int(time.time())
+    session_record = {
+        "id": random_urlsafe(10),
+        "kind": "story_package",
+        "createdAt": now,
+        "updatedAt": now,
+        "userId": user.get("userId"),
+        "status": "ready",
+        "packageStatus": "hydrating" if hydrated_node_ids != all_node_ids else "ready",
+        "meta": {
+            "opening": opening,
+            "role": role,
+            "author": user.get("name") or "SecondMe 用户",
+        },
+        "personaProfile": persona_profile,
+        "package": story_package,
+        "completedRun": None,
+    }
+    sessions.insert(0, session_record)
+    _save_sessions(sessions)
+    return session_record, False
 
 
 @app.get("/api/health")
@@ -825,108 +2014,35 @@ async def auth_logout(request: Request) -> Response:
 async def start_story(request: Request) -> JSONResponse:
     _require_env()
     server_session = _get_server_session(request)
-
     body = await request.json()
-    opening = body.get("opening", "").strip()
-    role = body.get("role", "").strip()
-    if not opening or not role:
-        raise HTTPException(status_code=400, detail="Missing opening or role")
-
-    user = server_session["user"]
-    access_token = server_session["token"]["access_token"]
-    persona_profile = _derive_persona_profile(user)
-    prompt = _compose_story_prompt(opening=opening, role=role, user_name=user.get("name") or "SecondMe 用户")
-    turn = _normalize_story_turn(await _call_secondme_chat(access_token=access_token, prompt=prompt))
-    choice_objects, recommended_choice_id, ai_choice_id = _build_choice_objects(turn["choices"], persona_profile)
-    now = int(time.time())
-    state = _update_story_state({}, "", turn["choices"], 1, turn["status"])
-    session_record = {
-        "id": random_urlsafe(10),
-        "createdAt": now,
-        "updatedAt": now,
-        "userId": user.get("userId"),
-        "status": turn["status"],
-        "turnCount": 1,
-        "meta": {
-            "opening": opening,
-            "role": role,
-            "author": user.get("name") or "SecondMe 用户",
-        },
-        "summary": turn["summary"],
-        "currentScene": turn["scene"],
-        "paragraphs": turn["paragraphs"],
-        "choices": choice_objects,
-        "stageLabel": turn["stageLabel"],
-        "directorNote": turn["directorNote"],
-        "state": state,
-        "personaProfile": persona_profile,
-        "recommendedChoiceId": recommended_choice_id,
-        "aiChoiceId": ai_choice_id,
-        "transcript": [
-            {"turn": 1, "label": turn["stageLabel"], "text": turn["scene"]},
-            *([{"turn": 1, "label": "局势提示", "text": turn["directorNote"]}] if turn["directorNote"] else []),
-        ],
-    }
-    sessions = _load_sessions()
-    sessions.insert(0, session_record)
-    _save_sessions(sessions)
+    session_record, reused = await _create_or_reuse_story_package(body, server_session)
 
     return JSONResponse(
         {
             "ok": True,
             "session": _serialize_session(session_record),
+            "reused": reused,
         }
     )
 
 
-@app.post("/api/story/continue")
-async def continue_story(request: Request) -> JSONResponse:
+@app.post("/api/story/preload")
+async def preload_story_package(request: Request) -> JSONResponse:
+    return await start_story(request)
+
+
+@app.post("/api/story/regenerate")
+async def regenerate_story_package(request: Request) -> JSONResponse:
     _require_env()
     server_session = _get_server_session(request)
     body = await request.json()
-    session_id = body.get("sessionId", "").strip()
-    action = body.get("action", "").strip()
-    if not session_id or not action:
-        raise HTTPException(status_code=400, detail="Missing sessionId or action")
+    session_record, _ = await _create_or_reuse_story_package({**body, "forceRegenerate": True}, server_session)
+    return JSONResponse({"ok": True, "session": _serialize_session(session_record), "reused": False})
 
-    sessions, story_session, index = _find_session(session_id, server_session["user"].get("userId"))
-    if story_session.get("status") == "complete":
-        raise HTTPException(status_code=400, detail="Story session already completed")
 
-    choice_map = {item.get("id"): item.get("text", "") for item in story_session.get("choices", [])}
-    action_text = choice_map.get(action, action)
-    prompt = _compose_story_turn_prompt(story_session, server_session["user"].get("name") or "SecondMe 用户", action_text)
-    turn = _normalize_story_turn(await _call_secondme_chat(server_session["token"]["access_token"], prompt))
-    next_turn = int(story_session.get("turnCount", 1)) + 1
-    choice_objects, recommended_choice_id, ai_choice_id = _build_choice_objects(turn["choices"], story_session.get("personaProfile", {}))
-    story_session["turnCount"] = next_turn
-    story_session["updatedAt"] = int(time.time())
-    story_session["status"] = turn["status"]
-    story_session["summary"] = turn["summary"]
-    story_session["currentScene"] = turn["scene"]
-    story_session["paragraphs"] = turn["paragraphs"]
-    story_session["choices"] = choice_objects
-    story_session["stageLabel"] = turn["stageLabel"]
-    story_session["directorNote"] = turn["directorNote"]
-    story_session["recommendedChoiceId"] = recommended_choice_id
-    story_session["aiChoiceId"] = ai_choice_id
-    story_session["state"] = _update_story_state(
-        story_session.get("state", {}),
-        action_text,
-        turn["choices"],
-        next_turn,
-        turn["status"],
-    )
-    transcript = story_session.setdefault("transcript", [])
-    transcript.extend([
-        {"turn": next_turn - 1, "label": "玩家行动", "text": action_text},
-        {"turn": next_turn, "label": turn["stageLabel"], "text": turn["scene"]},
-        *([{"turn": next_turn, "label": "局势提示", "text": turn["directorNote"]}] if turn["directorNote"] else []),
-    ])
-    story_session["transcript"] = _recent_transcript_window(transcript, limit=18)
-    sessions[index] = story_session
-    _save_sessions(sessions)
-    return JSONResponse({"ok": True, "session": _serialize_session(story_session)})
+@app.post("/api/story/continue")
+async def continue_story(request: Request) -> JSONResponse:
+    raise HTTPException(status_code=410, detail="Story continuation has moved to local package playback")
 
 
 @app.get("/api/story/sessions/{session_id}")
@@ -934,6 +2050,33 @@ async def get_story_session(session_id: str, request: Request) -> JSONResponse:
     _require_env()
     server_session = _get_server_session(request)
     _, story_session, _ = _find_session(session_id, server_session["user"].get("userId"))
+    return JSONResponse({"ok": True, "session": _serialize_session(story_session)})
+
+
+@app.post("/api/story/sessions/{session_id}/hydrate")
+async def hydrate_story_session(session_id: str, request: Request) -> JSONResponse:
+    _require_env()
+    server_session = _get_server_session(request)
+    sessions, story_session, index = _find_session(session_id, server_session["user"].get("userId"))
+    if story_session.get("kind") != "story_package":
+        raise HTTPException(status_code=400, detail="Story session does not support hydration")
+
+    package = story_session.get("package", {})
+    pending_nodes = [node for node in package.get("nodes", []) if not node.get("loaded")]
+    if pending_nodes:
+        story_session["package"] = await _hydrate_story_package_nodes(
+            session_record=story_session,
+            access_token=server_session["token"]["access_token"],
+            opening=story_session.get("meta", {}).get("opening", ""),
+            role=story_session.get("meta", {}).get("role", ""),
+        )
+        story_session["updatedAt"] = int(time.time())
+
+    all_node_ids = {node.get("id") for node in story_session.get("package", {}).get("nodes", []) if node.get("id")}
+    hydrated_node_ids = set(story_session.get("package", {}).get("hydratedNodeIds", []))
+    story_session["packageStatus"] = "ready" if hydrated_node_ids == all_node_ids else "hydrating"
+    sessions[index] = story_session
+    _save_sessions(sessions)
     return JSONResponse({"ok": True, "session": _serialize_session(story_session)})
 
 
@@ -946,7 +2089,16 @@ async def finalize_story(request: Request) -> JSONResponse:
     if not session_id:
         raise HTTPException(status_code=400, detail="Missing sessionId")
     sessions, story_session, index = _find_session(session_id, server_session["user"].get("userId"))
-    if story_session.get("status") != "complete":
+    if story_session.get("kind") == "story_package":
+        if body.get("completedRun"):
+            story_session["completedRun"] = _build_completed_run_from_payload(body, story_session)
+            story_session["status"] = "complete"
+            story_session["updatedAt"] = int(time.time())
+            sessions[index] = story_session
+            _save_sessions(sessions)
+        elif not story_session.get("completedRun"):
+            raise HTTPException(status_code=400, detail="Missing completed run payload")
+    elif story_session.get("status") != "complete":
         story_session["status"] = "complete"
         story_session["updatedAt"] = int(time.time())
         story_session["state"] = _update_story_state(
@@ -959,17 +2111,35 @@ async def finalize_story(request: Request) -> JSONResponse:
         sessions[index] = story_session
         _save_sessions(sessions)
     compiled_story = _build_story_from_session(story_session)
+    meta = {
+        **story_session.get("meta", {}),
+        "sessionId": story_session["id"],
+        "status": story_session.get("status", "complete"),
+    }
+    if story_session.get("kind") == "story_package":
+        completed_run = story_session.get("completedRun", {})
+        meta.update(
+            {
+                "turnCount": story_session.get("package", {}).get("playableTurnCount", 0),
+                "state": completed_run.get("state", {}),
+                "summary": completed_run.get("summary", ""),
+                "transcript": completed_run.get("transcript", []),
+                "endingNodeId": completed_run.get("endingNodeId", ""),
+                "packageTitle": story_session.get("package", {}).get("title", ""),
+            }
+        )
+    else:
+        meta.update(
+            {
+                "turnCount": story_session.get("turnCount", 0),
+                "state": story_session.get("state", {}),
+            }
+        )
     return JSONResponse(
         {
             "ok": True,
             "story": compiled_story,
-            "meta": {
-                **story_session.get("meta", {}),
-                "sessionId": story_session["id"],
-                "turnCount": story_session.get("turnCount", 0),
-                "status": story_session.get("status", "complete"),
-                "state": story_session.get("state", {}),
-            },
+            "meta": meta,
         }
     )
 
@@ -986,10 +2156,19 @@ async def analyze_story_ending(request: Request) -> JSONResponse:
 
     if session_id:
         _, story_session, _ = _find_session(session_id, server_session["user"].get("userId"))
-        opening = story_session.get("meta", {}).get("opening", "")
-        summary = story_session.get("summary", "")
-        transcript = story_session.get("transcript", [])
-        state = story_session.get("state", {})
+        if story_session.get("kind") == "story_package":
+            completed_run = story_session.get("completedRun")
+            if not completed_run:
+                raise HTTPException(status_code=400, detail="Story package is not finished yet")
+            opening = story_session.get("meta", {}).get("opening", "")
+            summary = completed_run.get("summary", "")
+            transcript = completed_run.get("transcript", [])
+            state = completed_run.get("state", {})
+        else:
+            opening = story_session.get("meta", {}).get("opening", "")
+            summary = story_session.get("summary", "")
+            transcript = story_session.get("transcript", [])
+            state = story_session.get("state", {})
     else:
         opening = meta.get("opening", "")
         summary = meta.get("summary", "") or story
@@ -1030,6 +2209,7 @@ async def save_story(request: Request) -> JSONResponse:
         "createdAt": int(time.time()),
         "userId": server_session["user"].get("userId"),
         "meta": {
+            **meta,
             "opening": meta.get("opening", ""),
             "role": meta.get("role", ""),
             "author": meta.get("author") or server_session["user"].get("name") or "SecondMe 用户",
@@ -1061,6 +2241,27 @@ async def get_story(story_id: str, request: Request) -> JSONResponse:
     user_id = server_session["user"].get("userId")
     for item in _load_stories():
         if item.get("id") == story_id and item.get("userId") == user_id:
+            return JSONResponse({"ok": True, "story": item})
+    raise HTTPException(status_code=404, detail="Story not found")
+
+
+@app.post("/api/stories/{story_id}/ending-analysis")
+async def cache_story_ending_analysis(story_id: str, request: Request) -> JSONResponse:
+    _require_env()
+    server_session = _get_server_session(request)
+    body = await request.json()
+    analysis = body.get("analysis")
+    if not isinstance(analysis, dict):
+        raise HTTPException(status_code=400, detail="Missing ending analysis")
+
+    stories = _load_stories()
+    user_id = server_session["user"].get("userId")
+    for index, item in enumerate(stories):
+        if item.get("id") == story_id and item.get("userId") == user_id:
+            meta = item.setdefault("meta", {})
+            meta["endingAnalysis"] = analysis
+            stories[index] = item
+            _save_stories(stories)
             return JSONResponse({"ok": True, "story": item})
     raise HTTPException(status_code=404, detail="Story not found")
 
