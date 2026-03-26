@@ -22,6 +22,7 @@ DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 STORIES_PATH = DATA_DIR / "stories.json"
 SESSIONS_PATH = DATA_DIR / "story_sessions.json"
 FRONTEND_DIST_DIR = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+COOKIE_PATH = "/"
 
 app.add_middleware(
     CORSMiddleware,
@@ -93,8 +94,13 @@ def _build_json_story_instruction(extra_instruction: str = "") -> str:
         "JSON 结构必须为："
         '{"scene":"当前场景描写","summary":"到目前为止的剧情摘要","choices":["动作1","动作2","动作3"],'
         '"status":"ongoing 或 ending 或 complete","stageLabel":"当前阶段标题","directorNote":"一句简短的局势提示"}。'
-        "其中 scene 必须自然分成 2 到 4 段剧情；choices 必须正好 3 条，每条都要是玩家下一步可以执行的明确动作。"
-        "三个 choices 必须分别体现明显不同的剧情策略，例如冲突、试探、回避、操控、信任、牺牲中的不同方向。"
+        "其中 scene 必须自然分成 2 到 4 段剧情；choices 必须正好 3 条。"
+        "choices 不要写成抽象指令，比如“直接质问对方”“暗中观察”“继续试探”。"
+        "choices 必须写成生活化、人物化、能直接点选的选项文案。"
+        "至少 2 个 choice 必须是带说话口吻的具体回应，可以直接写人物会说的话，或者“我抬眼看着他：……”“我笑了一下：……”这样的表达。"
+        "最多 1 个 choice 可以是纯行为选项。"
+        "三个 choices 必须体现明显不同的人设倾向、语言风格和关系走向，比如嘴硬、温柔、试探、撩拨、装傻、逞强、真诚、心机、克制、挑衅。"
+        "每个 choice 都要让人觉得有戏、有情绪张力、符合言情或互动小说的阅读感。"
         f"{extra}"
     )
 
@@ -107,7 +113,7 @@ def _compose_story_prompt(opening: str, role: str, user_name: str, extra_instruc
         f"故事开头：{opening}\n"
         "请生成第 1 回合。"
         "这一回合要完成世界建立、冲突抛出和可行动作设计。"
-        "选项之间必须产生真实分支张力，而不是语气变化。"
+        "选项之间必须产生真实分支张力，同时要让用户一眼看出这是不同性格主角会说的话或会做的事。"
         "status 默认为 ongoing，除非开头本身已经天然走到结局。"
     )
 
@@ -132,49 +138,84 @@ def _compose_story_turn_prompt(session: dict[str, Any], user_name: str, action: 
         f"本轮目标状态：{target_status}\n"
         "请基于玩家行动推进下一回合。"
         "如果之前埋下了信任、误解、操控、伪装等伏笔，请在本轮继续兑现这些影响。"
+        "新一轮 choices 要延续人物关系变化，给出更生活化、更像橙光互动小说的选项，不要退回抽象动作标签。"
         "如果故事已经接近收束，请让局势明显走向结局；如果本轮就是结局，请把 status 设为 complete。"
     )
 
 
+def _compose_ending_analysis_prompt(opening: str, summary: str, transcript: list[dict[str, Any]], state: dict[str, Any]) -> str:
+    action_lines = "\n".join(
+        f"- 第{item.get('turn', '')}回合 {item.get('text', '').strip()}"
+        for item in transcript
+        if "玩家行动" in str(item.get("label", "")) and item.get("text")
+    )
+    return (
+        "你是一名擅长中文互动小说、恋爱测试和角色洞察的分析型写手。"
+        "请根据用户在一局故事里的具体选择，输出一段有趣、轻巧、像互动游戏结算页一样的分析。"
+        "不要讲大道理，不要空泛总结，要结合具体选择风格来判断。\n"
+        "必须返回严格 JSON，不要使用 Markdown，不要使用代码块，不要添加 JSON 之外的任何文字。\n"
+        "JSON 结构必须为："
+        '{"title":"土豆人格标题","romance":"感情向分析","life":"生活向分析","nextUniverseHook":"一句推荐下一个宇宙的钩子"}。\n\n'
+        f"故事开头：{opening}\n"
+        f"剧情结局摘要：{summary}\n"
+        f"玩家实际选择：\n{action_lines or '- 暂无'}\n"
+        f"故事状态：{json.dumps(state or {}, ensure_ascii=False)}\n\n"
+        "要求："
+        "title 要像测试结果名，简短有记忆点；"
+        "romance 要分析这个人谈感情时是什么风格；"
+        "life 要分析这个人放到现实生活里像什么性格；"
+        "nextUniverseHook 要像一句有趣的推荐语。"
+    )
+
+
 async def _call_secondme_chat(access_token: str, prompt: str) -> str:
-    async with httpx.AsyncClient(timeout=60) as client:
-        chat_response = await client.post(
-            "https://api.mindverse.com/gate/lab/api/secondme/chat/stream",
-            headers={
-                "Authorization": f"Bearer {access_token}",
-                "Content-Type": "application/json",
-            },
-            json={"message": prompt},
-        )
-        if chat_response.status_code >= 400:
-            raise HTTPException(
-                status_code=400,
-                detail={"message": "SecondMe chat request failed", "body": chat_response.text},
+    try:
+        async with httpx.AsyncClient(timeout=60, trust_env=False) as client:
+            chat_response = await client.post(
+                "https://api.mindverse.com/gate/lab/api/secondme/chat/stream",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                },
+                json={"message": prompt},
             )
-        story_text = _extract_story_from_sse(chat_response.text)
-        if not story_text.strip():
-            raise HTTPException(status_code=400, detail="SecondMe chat returned empty content")
-        return story_text
+            if chat_response.status_code >= 400:
+                raise HTTPException(
+                    status_code=400,
+                    detail={"message": "SecondMe chat request failed", "body": chat_response.text},
+                )
+            story_text = _extract_story_from_sse(chat_response.text)
+            if not story_text.strip():
+                raise HTTPException(status_code=400, detail="SecondMe chat returned empty content")
+            return story_text
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"message": "Unable to reach SecondMe chat API", "error": str(exc)},
+        ) from exc
 
 
 def _normalize_story_turn(raw_text: str) -> dict[str, Any]:
     payload = _extract_json_object(raw_text)
-    scene = str(payload.get("scene", "")).strip()
-    summary = str(payload.get("summary", "")).strip()
-    stage_label = str(payload.get("stageLabel", "剧情推进")).strip() or "剧情推进"
-    director_note = str(payload.get("directorNote", "")).strip()
+    scene = _clean_model_text(payload.get("scene", ""))
+    summary = _clean_model_text(payload.get("summary", ""))
+    stage_label = _clean_model_text(payload.get("stageLabel", "剧情推进")) or "剧情推进"
+    director_note = _clean_model_text(payload.get("directorNote", ""))
     status = str(payload.get("status", "ongoing")).strip().lower()
     raw_choices = payload.get("choices", [])
     if not isinstance(raw_choices, list):
         raw_choices = []
-    choices = [str(item).strip() for item in raw_choices if str(item).strip()]
+    choices = [_clean_model_text(item) for item in raw_choices if _clean_model_text(item)]
     if len(choices) < 3:
-        fallback = ["直接质问关键人物", "假装平静继续试探", "暂时后撤并暗中观察"]
+        fallback = [
+            "我抬眼看着他，故作镇定地问：“所以，你现在打算把真相告诉我，还是继续让我猜？”",
+            "我先软下语气：“你别急，我不是来拆穿你的。我只是想知道，我该站在哪一边。”",
+            "我没有立刻开口，只是安静地观察他的表情，想先确认他真正害怕的到底是什么。"] 
         for item in fallback:
             if len(choices) >= 3:
                 break
             choices.append(item)
-    choices = _ensure_distinct_choices(choices[:3])
+    choices = _ensure_distinct_choices(choices[:3], scene)
     if status not in {"ongoing", "ending", "complete"}:
         status = "ongoing"
     if not scene:
@@ -192,15 +233,25 @@ def _normalize_story_turn(raw_text: str) -> dict[str, Any]:
     }
 
 
-def _ensure_distinct_choices(choices: list[str]) -> list[str]:
+def _normalize_ending_analysis(raw_text: str) -> dict[str, str]:
+    payload = _extract_json_object(raw_text)
+    return {
+        "title": _clean_model_text(payload.get("title", "")) or "你的土豆人格正在生成中",
+        "romance": _clean_model_text(payload.get("romance", "")) or "这局里的你，显然不是随便点点选项的人。",
+        "life": _clean_model_text(payload.get("life", "")) or "放到现实生活里，你大概也是那种会把故事过成连续剧的人。",
+        "nextUniverseHook": _clean_model_text(payload.get("nextUniverseHook", "")) or "下一本宇宙，也许更适合你的那一面。"
+    }
+
+
+def _ensure_distinct_choices(choices: list[str], scene: str = "") -> list[str]:
     distinct = []
     seen_styles = set()
     fallback_by_style = {
-        "confrontation": "直接质问对方，逼他当场表态",
-        "strategy": "假装若无其事地继续试探，套出更多信息",
-        "observation": "先离开现场，转去暗中观察局势",
+        "confrontation": "我盯着他的眼睛，半点没退：“你要是真想瞒我，就不会露出这种表情。现在，告诉我实话。”",
+        "soft": "我放轻声音：“你可以不马上解释清楚，但至少别把我推开。让我陪你一起面对。”",
+        "tease": "我偏头笑了一下：“原来你也会紧张？那我是不是该重新认识一下你了？”",
     }
-    ordered_styles = ["confrontation", "strategy", "observation"]
+    ordered_styles = ["confrontation", "soft", "tease"]
 
     for choice in choices:
         style = _choice_style(choice)
@@ -218,8 +269,18 @@ def _ensure_distinct_choices(choices: list[str]) -> list[str]:
         seen_styles.add(style)
 
     while len(distinct) < 3:
-        distinct.append(f"尝试一种新的行动方案 {len(distinct) + 1}")
+        distinct.append(_fallback_choice_by_index(len(distinct), scene))
     return distinct[:3]
+
+
+def _fallback_choice_by_index(index: int, scene: str) -> str:
+    fallbacks = [
+        "我低声开口：“你先别躲，我想听你亲口说。”",
+        "我故意弯起眼睛笑了笑：“如果你想试探我，那我也不介意陪你玩到底。”",
+        "我没有马上接话，只是顺着他的动作慢慢逼近一步，想看他会不会先失态。"] 
+    if 0 <= index < len(fallbacks):
+        return fallbacks[index]
+    return f"我顺着眼前的局势轻声说出第 {index + 1} 种回应，试探他的真实态度。"
 
 
 def _split_scene_into_paragraphs(scene: str) -> list[str]:
@@ -285,7 +346,7 @@ def _parse_loose_string_value(raw_value: str) -> str:
     value = raw_value.strip()
     if value.startswith('"') and value.endswith('"'):
         value = value[1:-1]
-    return (
+    return _clean_model_text(
         value.replace('\\"', '"')
         .replace("\\n", "\n")
         .replace("\\r", "")
@@ -293,6 +354,19 @@ def _parse_loose_string_value(raw_value: str) -> str:
         .replace("\\\\", "\\")
         .strip()
     )
+
+
+def _clean_model_text(value: Any) -> str:
+    text = str(value or "").replace("\r\n", "\n").strip()
+
+    # Some model responses leak the closing JSON brace into the final string field.
+    text = text.removesuffix("\n}").removesuffix("}")
+    text = text.strip()
+
+    if len(text) >= 2 and text.startswith('"') and text.endswith('"'):
+      text = text[1:-1].strip()
+
+    return text
 
 
 def _parse_loose_choices(raw_value: str) -> list[str]:
@@ -350,17 +424,24 @@ def _serialize_session(session: dict[str, Any]) -> dict[str, Any]:
         "status": session["status"],
         "turnCount": session["turnCount"],
         "meta": session["meta"],
-        "summary": session.get("summary", ""),
-        "currentScene": session.get("currentScene", ""),
-        "paragraphs": session.get("paragraphs", []),
+        "summary": _clean_model_text(session.get("summary", "")),
+        "currentScene": _clean_model_text(session.get("currentScene", "")),
+        "paragraphs": [_clean_model_text(item) for item in session.get("paragraphs", []) if _clean_model_text(item)],
         "choices": session.get("choices", []),
-        "stageLabel": session.get("stageLabel", "剧情推进"),
-        "directorNote": session.get("directorNote", ""),
+        "stageLabel": _clean_model_text(session.get("stageLabel", "剧情推进")) or "剧情推进",
+        "directorNote": _clean_model_text(session.get("directorNote", "")),
         "state": session.get("state", {}),
         "personaProfile": session.get("personaProfile", {}),
         "recommendedChoiceId": session.get("recommendedChoiceId"),
         "aiChoiceId": session.get("aiChoiceId"),
-        "transcript": session.get("transcript", []),
+        "transcript": [
+            {
+                **item,
+                "label": _clean_model_text(item.get("label", "")),
+                "text": _clean_model_text(item.get("text", "")),
+            }
+            for item in session.get("transcript", [])
+        ],
     }
 
 
@@ -430,9 +511,17 @@ def _derive_persona_profile(user: dict[str, Any]) -> dict[str, Any]:
 
 def _choice_style(choice: str) -> str:
     mapping = [
+        ("“", "dialogue"),
+        ("”", "dialogue"),
+        ("我笑", "tease"),
+        ("笑了一下", "tease"),
+        ("偏头", "tease"),
+        ("靠近", "tease"),
         ("质问", "confrontation"),
         ("揭穿", "confrontation"),
         ("逼", "confrontation"),
+        ("你到底", "confrontation"),
+        ("为什么", "confrontation"),
         ("试探", "strategy"),
         ("假装", "strategy"),
         ("套话", "strategy"),
@@ -440,6 +529,10 @@ def _choice_style(choice: str) -> str:
         ("观察", "observation"),
         ("躲", "observation"),
         ("相信", "trust"),
+        ("陪你", "soft"),
+        ("别怕", "soft"),
+        ("没关系", "soft"),
+        ("我会", "soft"),
         ("保护", "support"),
         ("安抚", "support"),
         ("利用", "manipulation"),
@@ -452,7 +545,53 @@ def _choice_style(choice: str) -> str:
     for keyword, style in mapping:
         if keyword in choice:
             return style
-    return "strategy"
+    return "dialogue"
+
+
+def _choice_tone(choice: str, style: str) -> str:
+    if style == "tease":
+        return "撩拨"
+    if style in {"soft", "support", "trust"}:
+        return "温柔"
+    if style == "confrontation":
+        return "强势"
+    if style in {"strategy", "manipulation"}:
+        return "试探"
+    if style == "observation":
+        return "克制"
+    if style == "risk":
+        return "冒险"
+    return "生活化"
+
+
+def _choice_effects(style: str) -> dict[str, dict[str, int]]:
+    persona_effect = {"真诚": 0, "嘴硬": 0, "心机": 0, "胆量": 0}
+    relationship_effect = {"好感": 0, "信任": 0, "警惕": 0}
+
+    if style in {"soft", "support", "trust"}:
+        persona_effect["真诚"] += 1
+        relationship_effect["好感"] += 1
+        relationship_effect["信任"] += 1
+    elif style == "tease":
+        persona_effect["胆量"] += 1
+        relationship_effect["好感"] += 1
+    elif style == "confrontation":
+        persona_effect["嘴硬"] += 1
+        persona_effect["胆量"] += 1
+        relationship_effect["警惕"] += 1
+    elif style in {"strategy", "manipulation"}:
+        persona_effect["心机"] += 1
+        relationship_effect["警惕"] += 1
+    elif style == "observation":
+        persona_effect["心机"] += 1
+    elif style == "risk":
+        persona_effect["胆量"] += 1
+        relationship_effect["警惕"] += 1
+
+    return {
+        "persona": {key: value for key, value in persona_effect.items() if value},
+        "relationship": {key: value for key, value in relationship_effect.items() if value},
+    }
 
 
 def _build_choice_objects(choice_texts: list[str], persona_profile: dict[str, Any]) -> tuple[list[dict[str, Any]], str, str]:
@@ -464,14 +603,17 @@ def _build_choice_objects(choice_texts: list[str], persona_profile: dict[str, An
     for index, text in enumerate(choice_texts, start=1):
         style = _choice_style(text)
         choice_id = f"C{index}"
+        effects = _choice_effects(style)
         choice = {
             "id": choice_id,
             "text": text,
             "style": style,
+            "tone": _choice_tone(text, style),
+            "effects": effects,
             "isRecommended": False,
             "isAiChoice": False,
         }
-        if recommended_choice_id is None and style in preferred_styles:
+        if recommended_choice_id is None and (style in preferred_styles or (style == "soft" and "support" in preferred_styles)):
             recommended_choice_id = choice_id
         choice_objects.append(choice)
 
@@ -502,12 +644,19 @@ def _infer_stage(turn_count: int, status: str) -> str:
 def _update_story_state(previous_state: dict[str, Any], action: str, choice_texts: list[str], turn_count: int, status: str) -> dict[str, Any]:
     flags = list(previous_state.get("flags", []))
     relationship = dict(previous_state.get("relationship", {"hero": 0, "villain": 0}))
+    persona = dict(previous_state.get("persona", {"真诚": 0, "嘴硬": 0, "心机": 0, "胆量": 0}))
     action_style = _choice_style(action)
+    effects = _choice_effects(action_style)
+
+    for key, value in effects.get("persona", {}).items():
+        persona[key] = persona.get(key, 0) + value
 
     if action_style in {"trust", "support"}:
         relationship["hero"] = relationship.get("hero", 0) + 1
         if "trust_path" not in flags:
             flags.append("trust_path")
+    if action_style in {"soft", "tease"}:
+        relationship["hero"] = relationship.get("hero", 0) + 1
     if action_style in {"confrontation", "risk"}:
         relationship["hero"] = relationship.get("hero", 0) - 1
         relationship["villain"] = relationship.get("villain", 0) - 1
@@ -532,6 +681,7 @@ def _update_story_state(previous_state: dict[str, Any], action: str, choice_text
         "stage": stage,
         "flags": flags,
         "relationship": relationship,
+        "persona": persona,
         "turn": turn_count,
         "endingHint": ending_hint,
     }
@@ -577,7 +727,7 @@ async def auth_login() -> RedirectResponse:
         "state": state,
     }
     response = RedirectResponse(url=f"{settings.auth_url}?{urlencode(params)}", status_code=302)
-    response.set_cookie("oauth_state", state, httponly=True, samesite="lax", max_age=600)
+    response.set_cookie("oauth_state", state, httponly=True, samesite="lax", max_age=600, path=COOKIE_PATH)
     return response
 
 
@@ -602,24 +752,30 @@ async def auth_exchange(request: Request) -> JSONResponse:
         "redirect_uri": settings.redirect_uri,
     }
 
-    async with httpx.AsyncClient(timeout=20) as client:
-        token_response = await client.post(settings.token_url, data=token_payload)
-        if token_response.status_code >= 400:
-            raise HTTPException(status_code=400, detail={"message": "Token exchange failed", "body": token_response.text})
-        token_result = token_response.json()
-        token_data = token_result.get("data", token_result)
-        access_token = token_data.get("accessToken") or token_data.get("access_token")
-        if not access_token:
-            raise HTTPException(status_code=400, detail={"message": "Token response missing access token", "body": token_result})
+    try:
+        async with httpx.AsyncClient(timeout=20, trust_env=False) as client:
+            token_response = await client.post(settings.token_url, data=token_payload)
+            if token_response.status_code >= 400:
+                raise HTTPException(status_code=400, detail={"message": "Token exchange failed", "body": token_response.text})
+            token_result = token_response.json()
+            token_data = token_result.get("data", token_result)
+            access_token = token_data.get("accessToken") or token_data.get("access_token")
+            if not access_token:
+                raise HTTPException(status_code=400, detail={"message": "Token response missing access token", "body": token_result})
 
-        userinfo_response = await client.get(
-            settings.userinfo_url,
-            headers={"Authorization": f"Bearer {access_token}"},
-        )
-        if userinfo_response.status_code >= 400:
-            raise HTTPException(status_code=400, detail={"message": "Failed to fetch user info", "body": userinfo_response.text})
-        userinfo_result = userinfo_response.json()
-        userinfo = userinfo_result.get("data", userinfo_result)
+            userinfo_response = await client.get(
+                settings.userinfo_url,
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            if userinfo_response.status_code >= 400:
+                raise HTTPException(status_code=400, detail={"message": "Failed to fetch user info", "body": userinfo_response.text})
+            userinfo_result = userinfo_response.json()
+            userinfo = userinfo_result.get("data", userinfo_result)
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"message": "Unable to reach SecondMe OAuth API", "error": str(exc)},
+        ) from exc
 
     # Keep the cookie payload small enough for browsers to reliably store it.
     session_user = {
@@ -642,8 +798,8 @@ async def auth_exchange(request: Request) -> JSONResponse:
     session_token = sign_payload(session_payload, settings.session_secret)
 
     response = JSONResponse({"ok": True, "user": session_user})
-    response.set_cookie("session", session_token, httponly=True, samesite="lax", max_age=60 * 60 * 24 * 7)
-    response.delete_cookie("oauth_state")
+    response.set_cookie("session", session_token, httponly=True, samesite="lax", max_age=60 * 60 * 24 * 7, path=COOKIE_PATH)
+    response.delete_cookie("oauth_state", path=COOKIE_PATH)
     return response
 
 
@@ -660,7 +816,8 @@ async def current_user(request: Request) -> JSONResponse:
 @app.post("/api/auth/logout")
 async def auth_logout(request: Request) -> Response:
     response = JSONResponse({"ok": True})
-    response.delete_cookie("session")
+    response.delete_cookie("session", path=COOKIE_PATH)
+    response.delete_cookie("oauth_state", path=COOKIE_PATH)
     return response
 
 
@@ -815,6 +972,40 @@ async def finalize_story(request: Request) -> JSONResponse:
             },
         }
     )
+
+
+@app.post("/api/story/analyze-ending")
+async def analyze_story_ending(request: Request) -> JSONResponse:
+    _require_env()
+    server_session = _get_server_session(request)
+    body = await request.json()
+
+    session_id = body.get("sessionId", "").strip()
+    story = body.get("story", "")
+    meta = body.get("meta", {}) or {}
+
+    if session_id:
+        _, story_session, _ = _find_session(session_id, server_session["user"].get("userId"))
+        opening = story_session.get("meta", {}).get("opening", "")
+        summary = story_session.get("summary", "")
+        transcript = story_session.get("transcript", [])
+        state = story_session.get("state", {})
+    else:
+        opening = meta.get("opening", "")
+        summary = meta.get("summary", "") or story
+        transcript = meta.get("transcript", []) or []
+        state = meta.get("state", {}) or {}
+
+    prompt = _compose_ending_analysis_prompt(
+        opening=opening,
+        summary=summary,
+        transcript=transcript,
+        state=state,
+    )
+    analysis = _normalize_ending_analysis(
+        await _call_secondme_chat(server_session["token"]["access_token"], prompt)
+    )
+    return JSONResponse({"ok": True, "analysis": analysis})
 
 
 @app.post("/api/story/generate")

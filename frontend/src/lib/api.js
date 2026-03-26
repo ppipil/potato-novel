@@ -58,6 +58,10 @@ export async function finalizeStorySession(payload) {
   return postJson("/api/story/finalize", payload, "Story finalization failed");
 }
 
+export async function analyzeStoryEnding(payload) {
+  return postJson("/api/story/analyze-ending", payload, "Story ending analysis failed");
+}
+
 export async function generateStory(payload) {
   return startStorySession(payload);
 }

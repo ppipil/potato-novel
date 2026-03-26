@@ -1,13 +1,15 @@
 <script setup>
 import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
-import { getStory, listStories } from "../lib/api";
+import { analyzeStoryEnding, getStory, listStories } from "../lib/api";
 
 const router = useRouter();
 const stories = ref([]);
 const currentStory = ref(null);
 const loading = ref(true);
 const error = ref("");
+const endingAnalysis = ref(null);
+const analyzingEnding = ref(false);
 
 const reviewTitle = computed(() => {
   if (!currentStory.value?.story) {
@@ -18,6 +20,7 @@ const reviewTitle = computed(() => {
 });
 
 const parsedBlocks = computed(() => parseStoryBlocks(currentStory.value?.story || ""));
+const reviewPersonaSummary = computed(() => endingAnalysis.value);
 
 onMounted(async () => {
   try {
@@ -38,8 +41,33 @@ async function openStory(storyId) {
     const result = await getStory(storyId);
     currentStory.value = result.story;
     error.value = "";
+    endingAnalysis.value = null;
+    await ensureEndingAnalysis(result.story);
   } catch (err) {
     error.value = err instanceof Error ? err.message : "读取失败";
+  }
+}
+
+async function ensureEndingAnalysis(storyRecord) {
+  if (!storyRecord || analyzingEnding.value) {
+    return;
+  }
+
+  analyzingEnding.value = true;
+  try {
+    const result = await analyzeStoryEnding({
+      story: storyRecord.story,
+      meta: {
+        ...storyRecord.meta,
+        summary: extractEndingSummary(storyRecord.story),
+        transcript: extractTranscriptFromStory(storyRecord.story)
+      }
+    });
+    endingAnalysis.value = result.analysis;
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : "尾声分析生成失败";
+  } finally {
+    analyzingEnding.value = false;
   }
 }
 
@@ -58,6 +86,18 @@ function parseStoryBlocks(storyText) {
   let pendingLabel = "";
 
   for (const segment of segments) {
+    if (
+      segment.includes("【结局状态】") ||
+      segment.includes("\n阶段：") ||
+      segment.startsWith("阶段：") ||
+      segment.includes("\n旗标：") ||
+      segment.startsWith("旗标：") ||
+      segment.includes("\n关系：") ||
+      segment.startsWith("关系：")
+    ) {
+      continue;
+    }
+
     if (segment.startsWith("《")) {
       blocks.push({ type: "title", text: segment });
       continue;
@@ -96,6 +136,33 @@ function parseStoryBlocks(storyText) {
   }
 
   return blocks;
+}
+
+function extractEndingSummary(storyText) {
+  const match = storyText.match(/【结局摘要】\n([\s\S]*?)(?:\n\n【|$)/);
+  return match?.[1]?.trim() || storyText;
+}
+
+function extractTranscriptFromStory(storyText) {
+  const segments = storyText
+    .split(/\n{2,}/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const transcript = [];
+  let pendingLabel = "";
+
+  for (const segment of segments) {
+    if (/^【第 .*】$/.test(segment)) {
+      pendingLabel = segment.replace(/^【|】$/g, "");
+      continue;
+    }
+    if (pendingLabel) {
+      transcript.push({ label: pendingLabel, text: segment });
+      pendingLabel = "";
+    }
+  }
+
+  return transcript;
 }
 </script>
 
@@ -172,6 +239,16 @@ function parseStoryBlocks(storyText) {
 
                 <p v-else class="story-prose">{{ block.text }}</p>
               </template>
+
+              <div v-if="reviewPersonaSummary" class="space-y-4 rounded-[30px] border border-paper-200 bg-white/82 px-5 py-5 shadow-[0_2px_12px_rgba(0,0,0,0.04)]">
+                <p class="text-center font-serif text-[1.45rem] text-paper-900">尾声签语</p>
+                <div class="rounded-[22px] bg-paper-100/80 px-4 py-4">
+                  <p class="font-serif text-[1.05rem] font-semibold text-paper-900">{{ reviewPersonaSummary.title }}</p>
+                  <p class="mt-2 text-sm leading-7 text-paper-700/80">{{ reviewPersonaSummary.romance }}</p>
+                  <p class="mt-2 text-sm leading-7 text-paper-700/70">{{ reviewPersonaSummary.life }}</p>
+                  <p class="mt-2 text-sm leading-7 text-paper-700/70">{{ reviewPersonaSummary.nextUniverseHook }}</p>
+                </div>
+              </div>
             </div>
           </article>
         </section>

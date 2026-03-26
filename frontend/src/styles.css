@@ -1,4 +1,3 @@
-@import url("https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;500;600;700&display=swap");
 @import "tailwindcss";
 
 @theme {
@@ -17,7 +16,7 @@
   --color-rose-glow: #efb8b8;
 
   --font-sans: "Avenir Next", "PingFang SC", "Hiragino Sans GB", system-ui, sans-serif;
-  --font-serif: "Noto Serif SC", "Songti SC", serif;
+  --font-serif: "Songti SC", "STSong", "Noto Serif CJK SC", "Source Han Serif SC", serif;
 
   --shadow-float: 0 10px 40px -10px rgba(74, 59, 50, 0.15);
   --shadow-card: 0 2px 12px rgba(0, 0, 0, 0.04);
@@ -214,8 +213,40 @@ button {
 
   .book-cover::after {
     content: "";
-    @apply absolute inset-x-0 bottom-0 h-20 bg-black/42;
+    @apply absolute inset-x-0 bottom-0 h-24 bg-black/42;
   }
+}
+
+.loading-orb {
+  position: relative;
+  width: 2.75rem;
+  height: 2.75rem;
+  animation: loading-spin 1.4s linear infinite;
+}
+
+.loading-orb span {
+  position: absolute;
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 9999px;
+  background: rgba(217, 119, 6, 0.92);
+  box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.12);
+}
+
+.loading-orb span:nth-child(1) {
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.loading-orb span:nth-child(2) {
+  right: 0;
+  bottom: 0.35rem;
+}
+
+.loading-orb span:nth-child(3) {
+  left: 0;
+  bottom: 0.35rem;
 }
 
 @keyframes typing-dot {
@@ -256,10 +287,30 @@ button {
   }
 }
 
+@keyframes loading-spin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .chunk-in {
   animation: chunk-in 0.6s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 .slide-up {
   animation: slide-up 0.42s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.18s ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
 }

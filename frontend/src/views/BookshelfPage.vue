@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
+import LoadingOverlay from "../components/LoadingOverlay.vue";
 import { getOpeningSummary, getOpeningTitle, presetOpenings } from "../data/openings";
 import { getCurrentUser, listStories, logout, startStorySession } from "../lib/api";
 
@@ -9,12 +10,12 @@ const user = ref(null);
 const openingMode = ref("custom");
 const selectedOpening = ref(presetOpenings[0] || "");
 const customOpening = ref("");
-const selectedRole = ref("NPC");
+const selectedRole = ref("主人公");
 const stories = ref([]);
 const generating = ref(false);
 const error = ref("");
+const activeSeed = ref("");
 
-const roles = ["男主", "女主", "NPC", "反派", "旁白代理人"];
 const templateTags = ["悬疑惊悚", "都市言情", "无限流", "命运反转"];
 const coverTints = [
   "bg-slate-800/22",
@@ -22,12 +23,18 @@ const coverTints = [
   "bg-amber-700/18",
   "bg-emerald-700/16"
 ];
+const freeCreationSeeds = [
+  "我是一个刚入职的实习生，入职第一天就撞破了霸总的秘密。可他没有第一时间开除我，而是递来一份婚约草案。",
+  "凌晨一点，我值夜班的便利店门口来了一个没有影子的人。他问我，今天是不是又少了一个活人。",
+  "联姻三个月后，我终于发现丈夫能听见我的部分心声。问题是，他每次都只能听见最容易误会的那半句。",
+  "我替妹妹出嫁的当天，新郎在婚礼后台递给我一张纸条：如果你也想逃，现在就跟我一起走。"
+];
 
 const shelfBooks = computed(() => {
   if (stories.value.length) {
     return stories.value.slice(0, 6).map((item, index) => ({
       id: item.id,
-      title: getOpeningTitle(item.meta?.opening || "未命名作品"),
+      title: formatBookCoverTitle(item.meta?.opening || "未命名作品"),
       turns: item.meta?.turnCount || 1,
       tint: coverTints[index % coverTints.length],
       onClick: () => router.push("/stories")
@@ -49,6 +56,11 @@ const shelfBooks = computed(() => {
 });
 
 onMounted(async () => {
+  if (!customOpening.value) {
+    activeSeed.value = freeCreationSeeds[Math.floor(Math.random() * freeCreationSeeds.length)];
+    customOpening.value = activeSeed.value;
+  }
+
   const [meResult, storiesResult] = await Promise.allSettled([getCurrentUser(), listStories()]);
 
   if (meResult.status === "fulfilled") {
@@ -73,10 +85,14 @@ async function handleLogout() {
 }
 
 async function handleGenerate() {
+  const openingToUse = openingMode.value === "custom" ? customOpening.value.trim() || freeCreationSeeds[0] : selectedOpening.value;
+  await startStoryFromOpening(openingToUse);
+}
+
+async function startStoryFromOpening(openingToUse) {
   generating.value = true;
   error.value = "";
   try {
-    const openingToUse = openingMode.value === "custom" ? customOpening.value.trim() : selectedOpening.value;
     if (!openingToUse) {
       error.value = "先写一个故事开局，或者选择一个模板。";
       generating.value = false;
@@ -95,15 +111,36 @@ async function handleGenerate() {
   }
 }
 
-function selectTemplate(opening) {
+async function selectTemplate(opening) {
   selectedOpening.value = opening;
   openingMode.value = "preset";
+  await startStoryFromOpening(opening);
+}
+
+function handleCustomInput() {
+  if (!activeSeed.value && freeCreationSeeds.includes(customOpening.value)) {
+    activeSeed.value = customOpening.value;
+  }
+}
+
+function formatBookCoverTitle(opening) {
+  const rawTitle = getOpeningTitle(opening).replace(/^《/, "").replace(/》$/, "").trim();
+  if (!rawTitle) {
+    return "未命名作品";
+  }
+  return rawTitle.length > 18 ? `${rawTitle.slice(0, 18)}…` : rawTitle;
 }
 </script>
 
 <template>
   <main class="paper-shell">
     <section class="paper-page">
+      <LoadingOverlay
+        :visible="generating"
+        title="正在进入故事"
+        description="土豆正在铺开第一幕场景，请稍候。"
+      />
+
       <header class="sticky top-0 z-20 -mx-6 mb-8 bg-paper-50/92 px-6 pb-5 pt-2 backdrop-blur-sm sm:-mx-8 sm:px-8">
         <div class="flex items-start justify-between gap-4">
           <div class="space-y-2">
@@ -144,8 +181,10 @@ function selectTemplate(opening) {
               <div class="absolute right-4 top-4 rounded-xl bg-stone-400/80 px-3 py-2 text-sm text-white">
                 {{ book.turns }} 轮
               </div>
-              <div class="absolute inset-x-0 bottom-0 z-10 px-4 pb-5 text-xl font-serif text-white">
+              <div class="absolute inset-x-0 bottom-0 z-10 px-4 pb-5">
+                <p class="line-clamp-2 font-serif text-base leading-6 text-white">
                 {{ book.title }}
+                </p>
               </div>
             </button>
           </div>
@@ -165,23 +204,20 @@ function selectTemplate(opening) {
 
               <textarea
                 v-model="customOpening"
-                class="shadow-inner-soft min-h-40 w-full resize-none rounded-[28px] border border-paper-100 bg-paper-50 px-6 py-6 font-serif text-[1.05rem] leading-9 text-paper-900 placeholder:text-paper-700/28"
-                placeholder="描述你的故事开局和你的身份，例如：我是一个刚入职的实习生，第一天上班就撞破了霸总的秘密..."
+                class="shadow-inner-soft min-h-40 w-full resize-none rounded-[28px] border border-paper-100 bg-paper-50 px-6 py-6 font-serif text-[1.05rem] leading-9 placeholder:text-paper-700/28"
+                :class="customOpening === activeSeed ? 'text-paper-700/42' : 'text-paper-900'"
+                placeholder="描述你的故事开局和你的身份..."
                 @focus="openingMode = 'custom'"
+                @input="handleCustomInput"
               />
 
               <div class="space-y-4">
-                <div class="flex flex-wrap gap-2">
-                  <button
-                    v-for="role in roles"
-                    :key="role"
-                    class="active-press rounded-full border px-4 py-2 text-sm"
-                    :class="role === selectedRole ? 'border-accent-500 bg-accent-500 text-white' : 'border-paper-200 bg-paper-50 text-paper-800'"
-                    @click="selectedRole = role"
-                  >
-                    {{ role }}
-                  </button>
-                </div>
+                <p class="rounded-2xl bg-paper-100/80 px-4 py-3 text-sm text-paper-800">
+                  当前默认以“{{ selectedRole }}”身份进入故事，角色定制后续会再优化开放。
+                </p>
+                <p class="rounded-2xl bg-paper-100/80 px-4 py-3 text-sm text-paper-800">
+                  输入框里这段浅灰色文字只是为你准备的开头灵感，你可以直接进入故事，也可以改写成自己的版本。
+                </p>
 
                 <div class="flex justify-end">
                   <button
@@ -201,6 +237,7 @@ function selectTemplate(opening) {
               v-for="(opening, index) in presetOpenings"
               :key="opening"
               class="paper-card active-press grid grid-cols-[1fr_10rem] overflow-hidden text-left"
+              :disabled="generating"
               @click="selectTemplate(opening)"
             >
               <div class="space-y-4 px-6 py-6">
@@ -226,7 +263,7 @@ function selectTemplate(opening) {
           </div>
 
           <p v-if="selectedOpening && openingMode === 'preset'" class="rounded-2xl bg-paper-100/80 px-4 py-3 text-sm text-paper-800">
-            当前模板：{{ getOpeningTitle(selectedOpening) }}
+            点击模板卡片会直接进入故事。当前模板：{{ getOpeningTitle(selectedOpening) }}
           </p>
           <p v-if="error" class="rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700">{{ error }}</p>
         </div>
