@@ -33,18 +33,20 @@ onMounted(async () => {
     router.replace("/bookshelf");
   } catch (err) {
     error.value = err instanceof Error ? err.message : "未知错误";
-    message.value = "登录换取 token 失败。请检查后端环境变量与 OAuth 端点。";
+    message.value = "登录换取 token 失败。";
   }
 });
 </script>
 
 <template>
-  <main class="page page-callback">
-    <section class="card narrow">
-      <p class="status">OAuth Callback</p>
-      <h1>{{ message }}</h1>
-      <p v-if="error" class="error">{{ error }}</p>
-      <p v-else>稍等片刻，马上进入你的书架。</p>
+  <main class="paper-shell">
+    <section class="paper-page flex min-h-screen items-center justify-center px-8 py-12">
+      <div class="paper-card glass-panel w-full rounded-[32px] px-7 py-10 text-center">
+        <p class="mb-4 text-xs uppercase tracking-[0.32em] text-accent-500">SecondMe Callback</p>
+        <h1 class="font-serif text-3xl leading-tight text-paper-900">{{ message }}</h1>
+        <p class="mt-5 text-paper-700/70" v-if="!error">稍等片刻，马上进入你的书架。</p>
+        <p class="mt-5 whitespace-pre-wrap text-sm text-red-700" v-else>{{ error }}</p>
+      </div>
     </section>
   </main>
 </template>
