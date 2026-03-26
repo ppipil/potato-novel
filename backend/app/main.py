@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,8 @@ from .openings import PRESET_OPENINGS, get_opening_summary, get_opening_title
 from .security import random_urlsafe, sign_payload, verify_payload
 
 app = FastAPI(title="Potato Novel Backend")
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+DEFAULT_DATA_DIR = Path("/tmp/potato-novel-data") if os.getenv("VERCEL") else Path(__file__).resolve().parent.parent / "data"
+DATA_DIR = Path(os.getenv("APP_DATA_DIR", str(DEFAULT_DATA_DIR))).resolve()
 STORIES_PATH = DATA_DIR / "stories.json"
 SESSIONS_PATH = DATA_DIR / "story_sessions.json"
 FRONTEND_DIST_DIR = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
