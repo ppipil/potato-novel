@@ -1,18 +1,35 @@
 <script setup>
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
-import { getStory, listStories } from "../lib/api";
+import LoadingOverlay from "../components/LoadingOverlay.vue";
+import { analyzeStoryEnding, cacheStoryEndingAnalysis, getStory, listStories } from "../lib/api";
 
 const router = useRouter();
 const stories = ref([]);
 const currentStory = ref(null);
 const loading = ref(true);
 const error = ref("");
+const endingAnalysis = ref(null);
+const analyzingEnding = ref(false);
+
+const reviewTitle = computed(() => {
+  if (!currentStory.value?.story) {
+    return "阅读回顾";
+  }
+  const firstLine = currentStory.value.story.split("\n").find((line) => line.trim());
+  return firstLine?.replace(/^《/, "").replace(/》$/, "") || "阅读回顾";
+});
+
+const parsedBlocks = computed(() => parseStoryBlocks(currentStory.value?.story || ""));
+const reviewPersonaSummary = computed(() => endingAnalysis.value);
 
 onMounted(async () => {
   try {
     const result = await listStories();
     stories.value = result.stories || [];
+    if (stories.value[0]?.id) {
+      await openStory(stories.value[0].id);
+    }
   } catch (err) {
     error.value = err instanceof Error ? err.message : "加载失败";
   } finally {
@@ -24,54 +41,238 @@ async function openStory(storyId) {
   try {
     const result = await getStory(storyId);
     currentStory.value = result.story;
+    error.value = "";
+    endingAnalysis.value = result.story.meta?.endingAnalysis || null;
+    await ensureEndingAnalysis(result.story);
   } catch (err) {
     error.value = err instanceof Error ? err.message : "读取失败";
   }
 }
+
+async function ensureEndingAnalysis(storyRecord) {
+  if (!storyRecord || analyzingEnding.value) {
+    return;
+  }
+
+  if (storyRecord.meta?.endingAnalysis) {
+    endingAnalysis.value = storyRecord.meta.endingAnalysis;
+    return;
+  }
+
+  analyzingEnding.value = true;
+  try {
+    const result = await analyzeStoryEnding({
+      story: storyRecord.story,
+      meta: {
+        ...storyRecord.meta,
+        summary: storyRecord.meta?.summary || extractEndingSummary(storyRecord.story),
+        transcript: storyRecord.meta?.transcript || extractTranscriptFromStory(storyRecord.story)
+      }
+    });
+    endingAnalysis.value = result.analysis;
+    if (storyRecord.id) {
+      await cacheStoryEndingAnalysis(storyRecord.id, { analysis: result.analysis });
+      currentStory.value = {
+        ...storyRecord,
+        meta: {
+          ...(storyRecord.meta || {}),
+          endingAnalysis: result.analysis
+        }
+      };
+      stories.value = stories.value.map((item) =>
+        item.id === storyRecord.id
+          ? {
+              ...item,
+              meta: {
+                ...(item.meta || {}),
+                endingAnalysis: result.analysis
+              }
+            }
+          : item
+      );
+    }
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : "尾声分析生成失败";
+  } finally {
+    analyzingEnding.value = false;
+  }
+}
+
+function parseStoryBlocks(storyText) {
+  if (!storyText.trim()) {
+    return [];
+  }
+
+  const segments = storyText
+    .split(/\n{2,}/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  const blocks = [];
+  let pendingType = null;
+  let pendingLabel = "";
+
+  for (const segment of segments) {
+    if (
+      segment.includes("【结局状态】") ||
+      segment.includes("\n阶段：") ||
+      segment.startsWith("阶段：") ||
+      segment.includes("\n旗标：") ||
+      segment.startsWith("旗标：") ||
+      segment.includes("\n关系：") ||
+      segment.startsWith("关系：")
+    ) {
+      continue;
+    }
+
+    if (segment.startsWith("《")) {
+      blocks.push({ type: "title", text: segment });
+      continue;
+    }
+
+    if (segment.startsWith("玩家身份：") || segment.startsWith("创作者：")) {
+      blocks.push({ type: "meta", text: segment });
+      continue;
+    }
+
+    if (/^【第 .*玩家行动】$/.test(segment)) {
+      pendingType = "action";
+      pendingLabel = segment.replace(/^【|】$/g, "");
+      continue;
+    }
+
+    if (/^【第 .*局势提示】$/.test(segment) || segment === "【结局摘要】") {
+      pendingType = segment === "【结局摘要】" ? "summary" : "note";
+      pendingLabel = segment.replace(/^【|】$/g, "");
+      continue;
+    }
+
+    if (/^【.+】$/.test(segment)) {
+      blocks.push({ type: "heading", text: segment.replace(/^【|】$/g, "") });
+      continue;
+    }
+
+    if (pendingType) {
+      blocks.push({ type: pendingType, label: pendingLabel, text: segment });
+      pendingType = null;
+      pendingLabel = "";
+      continue;
+    }
+
+    blocks.push({ type: "story", text: segment });
+  }
+
+  return blocks;
+}
+
+function extractEndingSummary(storyText) {
+  const match = storyText.match(/【结局摘要】\n([\s\S]*?)(?:\n\n【|$)/);
+  return match?.[1]?.trim() || storyText;
+}
+
+function extractTranscriptFromStory(storyText) {
+  const segments = storyText
+    .split(/\n{2,}/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const transcript = [];
+  let pendingLabel = "";
+
+  for (const segment of segments) {
+    if (/^【第 .*】$/.test(segment)) {
+      pendingLabel = segment.replace(/^【|】$/g, "");
+      continue;
+    }
+    if (pendingLabel) {
+      transcript.push({ label: pendingLabel, text: segment });
+      pendingLabel = "";
+    }
+  }
+
+  return transcript;
+}
 </script>
 
 <template>
-  <main class="page">
-    <section class="topbar">
-      <div>
-        <p class="status">本地保存记录</p>
-        <h1>我的小说历史</h1>
-      </div>
-      <button class="ghost" @click="router.push('/bookshelf')">返回书架</button>
-    </section>
+  <main class="paper-shell">
+    <section class="paper-page px-0 pt-0">
+      <LoadingOverlay
+        :visible="loading || analyzingEnding"
+        :title="analyzingEnding ? '正在解读这颗土豆' : '正在加载历史记录'"
+        :description="analyzingEnding ? 'SecondMe 正在根据这局故事补全结局签语。' : '土豆正在翻找你书架里的旧宇宙，请稍候。'"
+      />
 
-    <section v-if="loading" class="card">
-      <p>正在加载历史记录...</p>
-    </section>
-
-    <section v-else class="grid history-grid">
-      <article class="card">
-        <h2>已保存小说</h2>
-        <p v-if="!stories.length">还没有保存的小说，先去生成一篇吧。</p>
-        <div v-else class="stack">
-          <button
-            v-for="item in stories"
-            :key="item.id"
-            class="choice"
-            @click="openStory(item.id)"
-          >
-            <strong>{{ item.meta.role }}</strong>
-            <span>{{ item.meta.opening }}</span>
-          </button>
+      <header class="glass-panel sticky top-0 z-20 border-b border-paper-200/70 px-6 py-5 sm:px-8">
+        <div class="flex items-center justify-between gap-4">
+          <button class="active-press text-base text-paper-700" @click="router.push('/bookshelf')">返回书架</button>
+          <h1 class="truncate text-center font-serif text-[1.45rem] font-semibold text-paper-900">
+            {{ currentStory ? reviewTitle : "阅读回顾" }}
+          </h1>
+          <span class="w-16 text-right text-sm text-paper-700/55">{{ stories.length }} 本</span>
         </div>
-      </article>
+      </header>
 
-      <article class="card">
-        <h2>详情</h2>
-        <p v-if="error" class="error">{{ error }}</p>
-        <template v-else-if="currentStory">
-          <p>角色：{{ currentStory.meta.role }}</p>
-          <p>开头：{{ currentStory.meta.opening }}</p>
-          <p>创作者：{{ currentStory.meta.author }}</p>
-          <article class="story-body">{{ currentStory.story }}</article>
-        </template>
-        <p v-else>选择左侧一篇小说查看详情。</p>
-      </article>
+      <div class="hide-scrollbar h-[calc(100vh-4.5rem)] overflow-y-auto px-6 pb-16 pt-8 sm:px-8">
+        <section class="space-y-8">
+          <p v-if="error" class="rounded-[22px] bg-red-50 px-4 py-3 text-sm text-red-700">{{ error }}</p>
+          <p v-if="!stories.length" class="text-paper-700/70">还没有保存的小说，先去生成一篇吧。</p>
+
+          <article v-if="currentStory" class="space-y-6">
+            <p class="text-center font-serif text-[2.35rem] font-semibold text-paper-900">
+              {{ reviewTitle }}
+            </p>
+
+            <div class="space-y-6">
+              <template v-for="(block, index) in parsedBlocks" :key="`${block.type}-${index}`">
+                <p v-if="block.type === 'title'" class="hidden">{{ block.text }}</p>
+
+                <p v-else-if="block.type === 'meta'" class="text-center text-sm text-paper-700/60">
+                  {{ block.text }}
+                </p>
+
+                <p v-else-if="block.type === 'heading'" class="pt-4 text-center font-serif text-[1.4rem] text-paper-900">
+                  {{ block.text }}
+                </p>
+
+                <div v-else-if="block.type === 'action'" class="story-divider">
+                  <span class="story-divider-label">{{ block.text }}</span>
+                </div>
+
+                <div v-else-if="block.type === 'note'" class="rounded-[22px] bg-white/70 px-5 py-4 text-paper-700 shadow-[0_2px_12px_rgba(0,0,0,0.04)]">
+                  <p class="text-xs uppercase tracking-[0.24em] text-accent-500/70">{{ block.label }}</p>
+                  <p class="mt-2 leading-8">{{ block.text }}</p>
+                </div>
+
+                <div v-else-if="block.type === 'summary'" class="rounded-[28px] border border-paper-200 bg-paper-100/70 px-5 py-5">
+                  <p class="mb-2 text-xs uppercase tracking-[0.24em] text-paper-700/55">{{ block.label }}</p>
+                  <p class="story-prose no-indent">{{ block.text }}</p>
+                </div>
+
+                <p v-else class="story-prose">{{ block.text }}</p>
+              </template>
+
+              <div v-if="reviewPersonaSummary" class="space-y-4 rounded-[30px] border border-paper-200 bg-white/82 px-5 py-5 shadow-[0_2px_12px_rgba(0,0,0,0.04)]">
+                <p class="text-center font-serif text-[1.45rem] text-paper-900">尾声签语</p>
+                <div class="rounded-[22px] bg-paper-100/80 px-4 py-4">
+                  <p class="font-serif text-[1.05rem] font-semibold text-paper-900">{{ reviewPersonaSummary.title }}</p>
+                  <div v-if="reviewPersonaSummary.personaTags?.length" class="mt-3 flex flex-wrap gap-2">
+                    <span
+                      v-for="tag in reviewPersonaSummary.personaTags"
+                      :key="tag"
+                      class="rounded-full bg-white px-3 py-1.5 text-xs font-semibold text-paper-800"
+                    >
+                      {{ tag }}
+                    </span>
+                  </div>
+                  <p class="mt-2 text-sm leading-7 text-paper-700/80">{{ reviewPersonaSummary.romance }}</p>
+                  <p class="mt-2 text-sm leading-7 text-paper-700/70">{{ reviewPersonaSummary.life }}</p>
+                  <p class="mt-2 text-sm leading-7 text-paper-700/70">{{ reviewPersonaSummary.nextUniverseHook }}</p>
+                </div>
+              </div>
+            </div>
+          </article>
+        </section>
+      </div>
     </section>
   </main>
 </template>
