@@ -43,7 +43,6 @@ async function openStory(storyId) {
     currentStory.value = result.story;
     error.value = "";
     endingAnalysis.value = result.story.meta?.endingAnalysis || null;
-    await ensureEndingAnalysis(result.story);
   } catch (err) {
     error.value = err instanceof Error ? err.message : "读取失败";
   }
@@ -269,6 +268,17 @@ function extractTranscriptFromStory(storyText) {
                   <p class="mt-2 text-sm leading-7 text-paper-700/70">{{ reviewPersonaSummary.nextUniverseHook }}</p>
                 </div>
               </div>
+
+              <button
+                v-else-if="currentStory"
+                class="active-press w-full rounded-[30px] border border-paper-200 bg-white/82 px-5 py-5 text-center shadow-[0_2px_12px_rgba(0,0,0,0.04)]"
+                :disabled="analyzingEnding"
+                @click="ensureEndingAnalysis(currentStory)"
+              >
+                <span class="font-serif text-[1.2rem] text-paper-900">
+                  {{ analyzingEnding ? "正在生成尾声签语" : "生成尾声签语" }}
+                </span>
+              </button>
             </div>
           </article>
         </section>

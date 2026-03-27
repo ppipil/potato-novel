@@ -3,11 +3,16 @@ from __future__ import annotations
 import json
 import os
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
 import httpx
+try:
+    import psycopg
+except ImportError:  # pragma: no cover - fallback for environments without DB deps yet
+    psycopg = None
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
@@ -66,24 +71,192 @@ def _get_server_session(request: Request) -> dict[str, Any]:
     return {"user": user, "token": token}
 
 
+def _use_database_storage() -> bool:
+    return bool(settings.database_url.strip())
+
+
+def _require_psycopg() -> None:
+    if psycopg is None:
+        raise HTTPException(
+            status_code=500,
+            detail="DATABASE_URL is configured but psycopg is not installed on the backend runtime",
+        )
+
+
+@contextmanager
+def _db_connection():
+    _require_psycopg()
+    try:
+        with psycopg.connect(settings.database_url, autocommit=True) as conn:
+            yield conn
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail={"message": "Database connection failed", "error": str(exc)}) from exc
+
+
+def _story_row_to_record(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+        "userId": row["user_id"],
+        "meta": row.get("meta_json") or {},
+        "story": row["story_text"],
+    }
+
+
+def _session_row_to_record(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "kind": row["kind"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+        "userId": row["user_id"],
+        "status": row.get("status") or "ready",
+        "packageStatus": row.get("package_status") or "ready",
+        "meta": row.get("meta_json") or {},
+        "personaProfile": row.get("persona_profile_json") or {},
+        "package": row.get("package_json") or {},
+        "completedRun": row.get("completed_run_json"),
+    }
+
+
+def _load_stories_from_db() -> list[dict[str, Any]]:
+    with _db_connection() as conn, conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+        cur.execute(
+            """
+            SELECT id, user_id, title, story_text, meta_json, created_at, updated_at
+            FROM stories
+            ORDER BY updated_at DESC, created_at DESC
+            """
+        )
+        return [_story_row_to_record(row) for row in cur.fetchall()]
+
+
 def _load_stories() -> list[dict[str, Any]]:
+    if _use_database_storage():
+        return _load_stories_from_db()
     if not STORIES_PATH.exists():
         return []
     return json.loads(STORIES_PATH.read_text(encoding="utf-8"))
 
 
+def _save_story_record(record: dict[str, Any]) -> None:
+    with _db_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO stories (id, user_id, title, story_text, meta_json, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s)
+            ON CONFLICT (id) DO UPDATE SET
+                user_id = EXCLUDED.user_id,
+                title = EXCLUDED.title,
+                story_text = EXCLUDED.story_text,
+                meta_json = EXCLUDED.meta_json,
+                created_at = EXCLUDED.created_at,
+                updated_at = EXCLUDED.updated_at
+            """,
+            (
+                record["id"],
+                record["userId"],
+                record.get("meta", {}).get("opening") or record.get("title") or "",
+                record["story"],
+                json.dumps(record.get("meta", {}), ensure_ascii=False),
+                record["createdAt"],
+                record.get("updatedAt", record["createdAt"]),
+            ),
+        )
+
+
 def _save_stories(stories: list[dict[str, Any]]) -> None:
+    if _use_database_storage():
+        for item in stories:
+            _save_story_record(item)
+        return
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     STORIES_PATH.write_text(json.dumps(stories, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _load_sessions_from_db() -> list[dict[str, Any]]:
+    with _db_connection() as conn, conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+        cur.execute(
+            """
+            SELECT
+                id,
+                user_id,
+                kind,
+                status,
+                package_status,
+                meta_json,
+                persona_profile_json,
+                package_json,
+                completed_run_json,
+                created_at,
+                updated_at
+            FROM story_sessions
+            ORDER BY updated_at DESC, created_at DESC
+            """
+        )
+        return [_session_row_to_record(row) for row in cur.fetchall()]
+
+
 def _load_sessions() -> list[dict[str, Any]]:
+    if _use_database_storage():
+        return _load_sessions_from_db()
     if not SESSIONS_PATH.exists():
         return []
     return json.loads(SESSIONS_PATH.read_text(encoding="utf-8"))
 
 
+def _save_session_record(record: dict[str, Any]) -> None:
+    with _db_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO story_sessions (
+                id,
+                user_id,
+                kind,
+                status,
+                package_status,
+                meta_json,
+                persona_profile_json,
+                package_json,
+                completed_run_json,
+                created_at,
+                updated_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s)
+            ON CONFLICT (id) DO UPDATE SET
+                user_id = EXCLUDED.user_id,
+                kind = EXCLUDED.kind,
+                status = EXCLUDED.status,
+                package_status = EXCLUDED.package_status,
+                meta_json = EXCLUDED.meta_json,
+                persona_profile_json = EXCLUDED.persona_profile_json,
+                package_json = EXCLUDED.package_json,
+                completed_run_json = EXCLUDED.completed_run_json,
+                created_at = EXCLUDED.created_at,
+                updated_at = EXCLUDED.updated_at
+            """,
+            (
+                record["id"],
+                record["userId"],
+                record["kind"],
+                record.get("status", "ready"),
+                record.get("packageStatus", "ready"),
+                json.dumps(record.get("meta", {}), ensure_ascii=False),
+                json.dumps(record.get("personaProfile", {}), ensure_ascii=False),
+                json.dumps(record.get("package", {}), ensure_ascii=False),
+                json.dumps(record.get("completedRun"), ensure_ascii=False) if record.get("completedRun") is not None else None,
+                record["createdAt"],
+                record["updatedAt"],
+            ),
+        )
+
+
 def _save_sessions(sessions: list[dict[str, Any]]) -> None:
+    if _use_database_storage():
+        for item in sessions:
+            _save_session_record(item)
+        return
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     SESSIONS_PATH.write_text(json.dumps(sessions, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -2209,6 +2382,7 @@ async def save_story(request: Request) -> JSONResponse:
     record = {
         "id": story_id,
         "createdAt": int(time.time()),
+        "updatedAt": int(time.time()),
         "userId": server_session["user"].get("userId"),
         "meta": {
             **meta,
@@ -2262,6 +2436,7 @@ async def cache_story_ending_analysis(story_id: str, request: Request) -> JSONRe
         if item.get("id") == story_id and item.get("userId") == user_id:
             meta = item.setdefault("meta", {})
             meta["endingAnalysis"] = analysis
+            item["updatedAt"] = int(time.time())
             stories[index] = item
             _save_stories(stories)
             return JSONResponse({"ok": True, "story": item})

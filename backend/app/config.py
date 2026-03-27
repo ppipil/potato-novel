@@ -21,6 +21,7 @@ class Settings:
     frontend_origin: str = os.getenv("FRONTEND_ORIGIN", "http://localhost:3000")
     public_base_url: str = os.getenv("PUBLIC_BASE_URL", "http://localhost:8000")
     secondme_app_id: str = os.getenv("SECONDME_APP_ID", "")
+    database_url: str = os.getenv("DATABASE_URL", "")
 
 
 settings = Settings()

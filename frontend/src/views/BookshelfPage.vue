@@ -12,6 +12,7 @@ import {
   regenerateStoryPackage,
   startStorySession
 } from "../lib/api";
+import { readStoriesCache, writeStoriesCache } from "../lib/storyCache";
 
 const router = useRouter();
 const user = ref(null);
@@ -23,6 +24,7 @@ const stories = ref([]);
 const generating = ref(false);
 const preloading = ref(false);
 const regeneratingPackage = ref(false);
+const bootstrapping = ref(true);
 const error = ref("");
 const activeSeed = ref("");
 const preloadedSession = ref(null);
@@ -55,18 +57,7 @@ const shelfBooks = computed(() => {
     }));
   }
 
-  return [
-    {
-      id: "draft",
-      title: "《便利店的无头客》",
-      turns: 5,
-      tint: "bg-slate-500/20",
-      onClick: () => {
-        openingMode.value = "custom";
-        customOpening.value = "我是夜班便利店的临时店员，凌晨一点，一个没有影子的人推门走了进来。";
-      }
-    }
-  ];
+  return [];
 });
 
 const activeOpening = computed(() => {
@@ -132,24 +123,39 @@ onMounted(async () => {
     customOpening.value = activeSeed.value;
   }
   cacheStates.value = loadCacheStates();
-
-  const [meResult, storiesResult] = await Promise.allSettled([getCurrentUser(), listStories()]);
-
-  if (meResult.status === "fulfilled") {
-    if (!meResult.value.authenticated) {
+  try {
+    const meResult = await getCurrentUser();
+    if (!meResult.authenticated) {
       router.replace("/");
       return;
     }
-    user.value = meResult.value.user;
-  } else {
+    user.value = meResult.user;
+
+    const userId = user.value?.userId || "";
+    const cachedStories = readStoriesCache(userId);
+    if (cachedStories.length) {
+      stories.value = cachedStories;
+      bootstrapping.value = false;
+      void refreshStories(userId);
+      return;
+    }
+
+    await refreshStories(userId);
+  } catch {
     router.replace("/");
     return;
-  }
-
-  if (storiesResult.status === "fulfilled") {
-    stories.value = storiesResult.value.stories || [];
+  } finally {
+    if (bootstrapping.value) {
+      bootstrapping.value = false;
+    }
   }
 });
+
+async function refreshStories(userId = user.value?.userId || "") {
+  const storiesResult = await listStories();
+  stories.value = storiesResult.stories || [];
+  writeStoriesCache(userId, stories.value);
+}
 
 function getCacheState(opening) {
   return cacheStates.value[opening] || { status: "idle", mode: "preload", sessionId: "", progress: 0 };
@@ -250,13 +256,17 @@ async function handleLogout() {
 }
 
 async function handleGenerate(openingOverride = "") {
-  const openingToUse = (openingOverride || activeOpening.value || "").trim();
+  const normalizedOpening =
+    typeof openingOverride === "string"
+      ? openingOverride
+      : "";
+  const openingToUse = (normalizedOpening || activeOpening.value || "").trim();
   if (!openingToUse) {
     error.value = "先写一个故事开局，或者选择一个模板。";
     return;
   }
 
-  if (openingOverride) {
+  if (normalizedOpening) {
     selectedOpening.value = openingToUse;
     openingMode.value = "preset";
   }
@@ -319,9 +329,9 @@ function formatBookCoverTitle(opening) {
   <main class="paper-shell">
     <section class="paper-page">
       <LoadingOverlay
-        :visible="generating"
-        title="正在进入故事"
-        description="如果模板已经缓存成功，这次会优先直连那一套故事包。"
+        :visible="bootstrapping || generating"
+        :title="bootstrapping ? '正在整理你的书架' : '正在进入故事'"
+        :description="bootstrapping ? '优先读取本地缓存，并和云端故事记录做一次同步。' : '如果模板已经缓存成功，这次会优先直连那一套故事包。'"
       />
 
       <header class="sticky top-0 z-20 -mx-6 mb-8 bg-paper-50/92 px-6 pb-5 pt-2 backdrop-blur-sm sm:-mx-8 sm:px-8">
@@ -350,10 +360,10 @@ function formatBookCoverTitle(opening) {
         <div class="space-y-5">
           <div class="flex items-end justify-between">
             <h2 class="section-title">我的宇宙</h2>
-            <p class="text-xl text-paper-700/45">{{ stories.length || 1 }} 部作品</p>
+            <p class="text-xl text-paper-700/45">{{ stories.length }} 部作品</p>
           </div>
 
-          <div class="hide-scrollbar flex gap-4 overflow-x-auto pb-2">
+          <div v-if="shelfBooks.length" class="hide-scrollbar flex gap-4 overflow-x-auto pb-2">
             <button
               v-for="book in shelfBooks"
               :key="book.id"
@@ -370,6 +380,12 @@ function formatBookCoverTitle(opening) {
                 </p>
               </div>
             </button>
+          </div>
+          <div
+            v-else
+            class="rounded-[30px] border border-dashed border-paper-200 bg-white/55 px-6 py-10 text-center text-paper-700/60"
+          >
+            你的宇宙还是空的，先生成第一篇故事吧。
           </div>
         </div>
 

@@ -11,6 +11,7 @@ import {
   saveStory,
   startStorySession
 } from "../lib/api";
+import { upsertStoryCache } from "../lib/storyCache";
 
 const router = useRouter();
 const session = ref(null);
@@ -395,6 +396,7 @@ async function handleSave() {
         endingAnalysis: endingAnalysis.value || finalized.meta?.endingAnalysis || null
       }
     });
+    upsertStoryCache(result.story?.userId, result.story);
     session.value = {
       ...session.value,
       status: "complete",
