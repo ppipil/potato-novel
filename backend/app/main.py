@@ -31,6 +31,7 @@ SESSIONS_PATH = DATA_DIR / "story_sessions.json"
 FRONTEND_DIST_DIR = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
 COOKIE_PATH = "/"
 PACKAGE_VERSION = 2
+DEBUG_STORY_GENERATION = os.getenv("SECONDME_DEBUG_STORY", "").strip().lower() in {"1", "true", "yes", "on"}
 
 app.add_middleware(
     CORSMiddleware,
@@ -55,6 +56,12 @@ def _require_env() -> None:
             missing.append(name)
     if missing:
         raise HTTPException(status_code=500, detail={"message": "Missing backend configuration", "fields": missing})
+
+
+def _debug_story_log(tag: str, payload: dict[str, Any]) -> None:
+    if not DEBUG_STORY_GENERATION:
+        return
+    print(tag, json.dumps(payload, ensure_ascii=False), flush=True)
 
 
 def _get_server_session(request: Request) -> dict[str, Any]:
@@ -1442,8 +1449,8 @@ def _story_package_validation_error(story_package: dict[str, Any]) -> str | None
         return "rootNodeId must point to an existing node"
     playable_nodes = [node for node in nodes if node.get("kind") == "turn"]
     ending_nodes = [node for node in nodes if node.get("kind") == "ending"]
-    if not (4 <= len(playable_nodes) <= 7):
-        return "Story package must contain 4 to 7 playable turn nodes"
+    if len(playable_nodes) < 2:
+        return "Story package must contain at least 2 playable turn nodes"
     if len(ending_nodes) != 3:
         return "Story package must contain exactly 3 ending nodes"
     path_depths: list[int] = []
@@ -1601,8 +1608,30 @@ async def _generate_story_skeleton(
             action_control=prompt,
             max_tokens=4000,
         )
+        _debug_story_log(
+            "[story-skeleton-raw]",
+            {
+                "attempt": attempt + 1,
+                "opening": opening[:80],
+                "role": role,
+                "raw": raw_text,
+            },
+        )
         try:
-            return _normalize_story_skeleton(raw_text, opening=opening, role=role)
+            skeleton = _normalize_story_skeleton(raw_text, opening=opening, role=role)
+            _debug_story_log(
+                "[story-skeleton-normalized]",
+                {
+                    "attempt": attempt + 1,
+                    "opening": opening[:80],
+                    "role": role,
+                    "nodeCount": len(skeleton.get("nodes", [])),
+                    "turnCount": sum(1 for node in skeleton.get("nodes", []) if node.get("kind") == "turn"),
+                    "endingCount": sum(1 for node in skeleton.get("nodes", []) if node.get("kind") == "ending"),
+                    "skeleton": skeleton,
+                },
+            )
+            return skeleton
         except HTTPException as exc:
             print(
                 "[story-skeleton-debug]",

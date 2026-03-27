@@ -37,6 +37,14 @@ onMounted(async () => {
   }
 });
 
+function goBack() {
+  if (window.history.length > 1) {
+    router.back();
+    return;
+  }
+  router.push("/bookshelf");
+}
+
 async function openStory(storyId) {
   try {
     const result = await getStory(storyId);
@@ -201,9 +209,15 @@ function extractTranscriptFromStory(storyText) {
         :description="analyzingEnding ? 'SecondMe 正在根据这局故事补全结局签语。' : '土豆正在翻找你书架里的旧宇宙，请稍候。'"
       />
 
-      <header class="glass-panel sticky top-0 z-20 border-b border-paper-200/70 px-6 py-5 sm:px-8">
+      <header class="glass-panel sticky top-0 z-30 shrink-0 border-b border-paper-200/70 px-6 py-4 shadow-[0_10px_28px_rgba(74,59,50,0.08)] sm:px-8">
         <div class="flex items-center justify-between gap-4">
-          <button class="active-press text-base text-paper-700" @click="router.push('/bookshelf')">返回书架</button>
+          <button
+            class="active-press inline-flex h-11 min-w-11 items-center justify-center rounded-full border border-paper-200 bg-white/88 px-3 text-xl text-paper-700 shadow-[0_4px_14px_rgba(0,0,0,0.06)]"
+            aria-label="返回"
+            @click="goBack"
+          >
+            ←
+          </button>
           <h1 class="truncate text-center font-serif text-[1.45rem] font-semibold text-paper-900">
             {{ currentStory ? reviewTitle : "阅读回顾" }}
           </h1>

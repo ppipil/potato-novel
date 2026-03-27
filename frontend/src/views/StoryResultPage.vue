@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onMounted, ref } from "vue";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import LoadingOverlay from "../components/LoadingOverlay.vue";
 import { presetOpenings, getOpeningTitle, getOpeningSummary } from "../data/openings";
 import {
@@ -14,11 +14,13 @@ import {
 import { upsertStoryCache } from "../lib/storyCache";
 
 const router = useRouter();
+const route = useRoute();
 const session = ref(null);
 const runtime = ref(null);
 const error = ref("");
 const saveMessage = ref("");
 const loading = ref(true);
+const loadingLabel = ref("正在进入故事...");
 const saving = ref(false);
 const hydratingPackage = ref(false);
 const finalizedPayload = ref(null);
@@ -140,6 +142,8 @@ const recommendedUniverses = computed(() => {
 });
 
 onMounted(async () => {
+  const entryType = typeof route.query.entry === "string" ? route.query.entry : "";
+  loadingLabel.value = entryType === "custom" ? "第一幕正在落页..." : entryType === "library" ? "正在翻开故事..." : "正在恢复故事会话...";
   const raw = sessionStorage.getItem("potato-novel-story-session");
   if (!raw) {
     loading.value = false;
@@ -163,6 +167,14 @@ onMounted(async () => {
     loading.value = false;
   }
 });
+
+function goBack() {
+  if (window.history.length > 1) {
+    router.back();
+    return;
+  }
+  router.push("/bookshelf");
+}
 
 function buildNodeEntries(node) {
   if (!node) {
@@ -476,22 +488,32 @@ async function launchRecommendedUniverse(opening) {
         :description="overlayDescription"
       />
 
-      <header class="glass-panel sticky top-0 z-30 flex items-center justify-between border-b border-paper-200/70 px-6 py-5 safe-pb sm:px-8">
-        <button class="active-press text-3xl text-paper-700" @click="router.push('/bookshelf')">←</button>
-        <h1 class="mx-4 truncate font-serif text-[1.18rem] font-semibold text-paper-900">{{ pageTitle }}</h1>
+      <header class="glass-panel sticky top-0 z-30 shrink-0 border-b border-paper-200/70 px-6 py-4 shadow-[0_10px_28px_rgba(74,59,50,0.08)] sm:px-8">
+        <div class="flex items-center justify-between gap-3">
+          <button
+            class="active-press inline-flex h-11 min-w-11 items-center justify-center rounded-full border border-paper-200 bg-white/88 px-3 text-xl text-paper-700 shadow-[0_4px_14px_rgba(0,0,0,0.06)]"
+            aria-label="返回"
+            @click="goBack"
+          >
+            ←
+          </button>
+          <h1 class="mx-2 flex-1 truncate text-center font-serif text-[1.18rem] font-semibold text-paper-900">{{ pageTitle }}</h1>
+          <div class="flex justify-end">
         <button
-          class="active-press rounded-full px-3 py-1.5 text-lg font-semibold text-accent-500 disabled:text-paper-700/40"
+          class="active-press min-w-[6.5rem] rounded-full border border-paper-200 bg-white/80 px-3 py-2 text-sm font-semibold text-accent-600 shadow-[0_4px_14px_rgba(0,0,0,0.05)] disabled:text-paper-700/40"
           :disabled="!canSave"
           @click="handleSave"
         >
           {{ saving ? "保存中" : isSessionComplete ? "保存书架" : "未完待续" }}
         </button>
+          </div>
+        </div>
       </header>
 
-      <div v-if="loading" class="flex flex-1 items-center justify-center px-8 py-16 text-paper-800">正在恢复故事会话...</div>
+      <div v-if="loading" class="flex flex-1 items-center justify-center px-8 py-16 text-paper-800">{{ loadingLabel }}</div>
       <div v-else-if="!session || !runtime || !currentNode" class="flex flex-1 items-center justify-center px-8 py-16 text-paper-800">还没有开始互动故事，请先回到书架创建一个开局。</div>
       <div v-else class="flex min-h-0 flex-1 flex-col">
-        <div class="hide-scrollbar flex-1 overflow-y-auto px-6 pb-12 pt-8 sm:px-8" @click="revealNextParagraph">
+        <div class="hide-scrollbar flex-1 overflow-y-auto px-6 pb-12 pt-6 sm:px-8" @click="revealNextParagraph">
           <div class="space-y-8">
             <div
               v-for="item in renderedHistory"

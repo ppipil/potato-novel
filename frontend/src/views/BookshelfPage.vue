@@ -30,6 +30,7 @@ const preloadedSession = ref(null);
 const cacheStates = ref({});
 const CACHE_STORAGE_KEY = "potato-novel-cache-states";
 const cacheTimers = new Map();
+const cacheProgressMeta = new Map();
 
 const templateTags = ["悬疑惊悚", "都市言情", "无限流", "命运反转"];
 const coverTints = [
@@ -157,7 +158,7 @@ async function refreshStories(userId = user.value?.userId || "") {
 }
 
 function getCacheState(opening) {
-  return cacheStates.value[opening] || { status: "idle", mode: "preload", sessionId: "", progress: 0 };
+  return cacheStates.value[opening] || { status: "idle", mode: "preload", sessionId: "", progress: 0, phase: "" };
 }
 
 function setCacheState(opening, nextState) {
@@ -171,8 +172,28 @@ function setCacheState(opening, nextState) {
   persistCacheStates();
 }
 
+function getProgressPhase(progress, mode) {
+  if (progress < 10) {
+    return "准备中";
+  }
+  if (progress < 35) {
+    return mode === "regenerate" ? "重建世界观" : "载入故事骨架";
+  }
+  if (progress < 62) {
+    return mode === "regenerate" ? "整理新分支" : "整理章节内容";
+  }
+  if (progress < 82) {
+    return mode === "regenerate" ? "校对走向" : "校验章节顺序";
+  }
+  if (progress < 96) {
+    return "即将完成";
+  }
+  return "已完成";
+}
+
 function startCacheProgress(opening, mode) {
   stopCacheProgress(opening);
+  cacheProgressMeta.set(opening, { startedAt: Date.now(), mode });
   cacheTimers.set(
     opening,
     setInterval(() => {
@@ -181,11 +202,18 @@ function startCacheProgress(opening, mode) {
         stopCacheProgress(opening);
         return;
       }
-      const increment = mode === "regenerate" ? 5 : 7;
-      const ceiling = mode === "regenerate" ? 89 : 93;
-      const nextProgress = Math.min((state.progress || 0) + increment, ceiling);
-      setCacheState(opening, { progress: nextProgress });
-    }, 220)
+      const meta = cacheProgressMeta.get(opening);
+      const elapsed = Math.max(0, Date.now() - (meta?.startedAt || Date.now()));
+      const maxProgress = mode === "regenerate" ? 95 : 96;
+      const baseCurve = maxProgress * (1 - Math.exp(-elapsed / (mode === "regenerate" ? 7000 : 6200)));
+      const wave = Math.sin(elapsed / 900) * 1.4;
+      const floorBoost = elapsed < 1500 ? elapsed / 220 : 0;
+      const nextProgress = Math.min(
+        maxProgress,
+        Math.max(state.progress || 0, Math.round(baseCurve + wave + floorBoost))
+      );
+      setCacheState(opening, { progress: nextProgress, phase: getProgressPhase(nextProgress, mode) });
+    }, 280)
   );
 }
 
@@ -195,6 +223,7 @@ function stopCacheProgress(opening) {
     clearInterval(timer);
     cacheTimers.delete(opening);
   }
+  cacheProgressMeta.delete(opening);
 }
 
 async function cacheTemplate(opening) {
@@ -202,7 +231,7 @@ async function cacheTemplate(opening) {
   openingMode.value = "preset";
   error.value = "";
   preloadedSession.value = null;
-  setCacheState(opening, { status: "loading", mode: "preload", sessionId: "", progress: 12 });
+  setCacheState(opening, { status: "loading", mode: "preload", sessionId: "", progress: 3, phase: getProgressPhase(3, "preload") });
   startCacheProgress(opening, "preload");
   preloading.value = true;
 
@@ -212,11 +241,11 @@ async function cacheTemplate(opening) {
       role: selectedRole.value
     });
     stopCacheProgress(opening);
-    setCacheState(opening, { status: "ready", mode: "preload", sessionId: result.session?.id || "", progress: 100 });
+    setCacheState(opening, { status: "ready", mode: "preload", sessionId: result.session?.id || "", progress: 100, phase: "已完成" });
     preloadedSession.value = result.session;
   } catch (err) {
     stopCacheProgress(opening);
-    setCacheState(opening, { status: "error", mode: "preload", sessionId: "", progress: 0 });
+    setCacheState(opening, { status: "error", mode: "preload", sessionId: "", progress: 0, phase: "" });
     error.value = err instanceof Error ? err.message : "预生成故事包失败";
   } finally {
     preloading.value = false;
@@ -228,7 +257,7 @@ async function regenerateTemplateCache(opening) {
   openingMode.value = "preset";
   error.value = "";
   preloadedSession.value = null;
-  setCacheState(opening, { status: "loading", mode: "regenerate", sessionId: "", progress: 10 });
+  setCacheState(opening, { status: "loading", mode: "regenerate", sessionId: "", progress: 2, phase: getProgressPhase(2, "regenerate") });
   startCacheProgress(opening, "regenerate");
   regeneratingPackage.value = true;
 
@@ -238,11 +267,11 @@ async function regenerateTemplateCache(opening) {
       role: selectedRole.value
     });
     stopCacheProgress(opening);
-    setCacheState(opening, { status: "ready", mode: "regenerate", sessionId: result.session?.id || "", progress: 100 });
+    setCacheState(opening, { status: "ready", mode: "regenerate", sessionId: result.session?.id || "", progress: 100, phase: "已完成" });
     preloadedSession.value = result.session;
   } catch (err) {
     stopCacheProgress(opening);
-    setCacheState(opening, { status: "error", mode: "regenerate", sessionId: "", progress: 0 });
+    setCacheState(opening, { status: "error", mode: "regenerate", sessionId: "", progress: 0, phase: "" });
     error.value = err instanceof Error ? err.message : "重新生成故事包失败";
   } finally {
     regeneratingPackage.value = false;
@@ -270,6 +299,7 @@ async function handleGenerate(openingOverride = "") {
   try {
     const isPresetOpening = presetOpenings.includes(openingToUse);
     const cachedState = getCacheState(openingToUse);
+    const entryMode = isPresetOpening ? "library" : "custom";
 
     if (isPresetOpening && cachedState.status === "ready" && cachedState.sessionId) {
       try {
@@ -294,7 +324,12 @@ async function handleGenerate(openingOverride = "") {
       }
       sessionStorage.setItem("potato-novel-story-session", JSON.stringify(result.session));
     }
-    router.push("/story/result");
+    router.push({
+      path: "/story/result",
+      query: {
+        entry: entryMode
+      }
+    });
   } catch (err) {
     error.value = err instanceof Error ? err.message : "进入故事失败";
   } finally {
@@ -324,8 +359,8 @@ function formatBookCoverTitle(opening) {
     <section class="paper-page">
       <LoadingOverlay
         :visible="bootstrapping || generating"
-        :title="bootstrapping ? '正在整理你的书架' : '正在进入故事'"
-        :description="bootstrapping ? '优先读取本地缓存，并和云端故事记录做一次同步。' : '如果模板已经缓存成功，这次会优先直连那一套故事包。'"
+        :title="bootstrapping ? '正在整理你的书架' : openingMode === 'custom' ? '正在写下第一幕' : '正在翻开故事'"
+        :description="bootstrapping ? '优先读取本地缓存，并和云端故事记录做一次同步。' : openingMode === 'custom' ? '土豆正在把你的开头整理成故事的第一页。' : '如果模板已经准备好，这次会直接带你进入那个宇宙。'"
       />
 
       <header class="sticky top-0 z-20 -mx-6 mb-8 bg-paper-50/92 px-6 pb-5 pt-2 backdrop-blur-sm sm:-mx-8 sm:px-8">
@@ -474,19 +509,19 @@ function formatBookCoverTitle(opening) {
                   >
                     {{
                       getCacheState(opening).status === 'loading'
-                        ? '下载中'
+                        ? getCacheState(opening).phase || '加载中'
                         : getCacheState(opening).status === 'ready'
-                          ? '重新下载'
+                          ? '重新整理'
                           : getCacheState(opening).status === 'error'
-                            ? '下载失败'
-                            : '未下载'
+                            ? '加载失败'
+                            : '待加载'
                     }}
                   </p>
                   <p
                     v-if="getCacheState(opening).status === 'ready'"
                     class="text-right text-[0.62rem] font-medium tracking-[0.04em] text-white/82"
                   >
-                    已缓存，可直接进入
+                    已准备好，可直接进入
                   </p>
                 </div>
               </div>
