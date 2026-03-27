@@ -7,7 +7,6 @@ import {
   getCurrentUser,
   getStorySession,
   listStories,
-  logout,
   preloadStoryPackage,
   regenerateStoryPackage,
   startStorySession
@@ -250,11 +249,6 @@ async function regenerateTemplateCache(opening) {
   }
 }
 
-async function handleLogout() {
-  await logout();
-  router.replace("/");
-}
-
 async function handleGenerate(openingOverride = "") {
   const normalizedOpening =
     typeof openingOverride === "string"
@@ -335,7 +329,7 @@ function formatBookCoverTitle(opening) {
       />
 
       <header class="sticky top-0 z-20 -mx-6 mb-8 bg-paper-50/92 px-6 pb-5 pt-2 backdrop-blur-sm sm:-mx-8 sm:px-8">
-        <div class="flex items-start justify-between gap-4">
+        <div class="flex items-center justify-between gap-4">
           <div class="space-y-2">
             <p class="text-sm uppercase tracking-[0.24em] text-paper-700/55">Welcome Back</p>
             <h1 class="font-serif text-[2.6rem] font-semibold text-paper-900">
@@ -343,14 +337,9 @@ function formatBookCoverTitle(opening) {
             </h1>
           </div>
 
-          <div class="flex flex-col items-end gap-3">
+          <div class="shrink-0 self-start pt-1">
             <div class="flex h-14 w-14 items-center justify-center rounded-full border-4 border-white bg-paper-200 text-lg text-paper-700 shadow-[0_6px_20px_rgba(74,59,50,0.12)]">
               {{ (user?.name || user?.nickname || "创")?.slice(0, 1) }}
-            </div>
-            <div class="flex items-center gap-2 text-xs text-paper-700/65">
-              <button class="active-press" @click="router.push('/stories')">历史</button>
-              <span>·</span>
-              <button class="active-press" @click="handleLogout">退出</button>
             </div>
           </div>
         </div>
@@ -391,7 +380,6 @@ function formatBookCoverTitle(opening) {
 
         <div class="space-y-4">
           <h2 class="font-serif text-[2.3rem] font-semibold text-paper-900">开启新篇章</h2>
-          <p class="text-[1.08rem] text-paper-700/55">先在书架阶段把互动故事包预热好，点进去时就更接近秒开。</p>
 
           <article class="paper-card relative overflow-hidden px-6 py-7">
             <div class="absolute right-6 top-6 h-16 w-16 rounded-full bg-accent-400/20 blur-2xl"></div>
