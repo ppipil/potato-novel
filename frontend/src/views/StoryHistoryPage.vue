@@ -1,9 +1,12 @@
 <script setup>
 import { computed, onMounted, ref } from "vue";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import LoadingOverlay from "../components/LoadingOverlay.vue";
 import { analyzeStoryEnding, cacheStoryEndingAnalysis, getStory, listStories } from "../lib/api";
+import { readStoriesCache, writeStoriesCache } from "../lib/storyCache";
+import { readUserCache } from "../lib/userCache";
 
+const route = useRoute();
 const router = useRouter();
 const stories = ref([]);
 const currentStory = ref(null);
@@ -24,11 +27,28 @@ const parsedBlocks = computed(() => parseStoryBlocks(currentStory.value?.story |
 const reviewPersonaSummary = computed(() => endingAnalysis.value);
 
 onMounted(async () => {
+  const targetStoryId = typeof route.query.storyId === "string" ? route.query.storyId : "";
+  const cachedUser = readUserCache();
+  const cachedStories = readStoriesCache(cachedUser?.userId || "");
+  if (cachedStories.length) {
+    stories.value = cachedStories;
+    const preferredStory = (targetStoryId && cachedStories.find((item) => item.id === targetStoryId)) || cachedStories[0];
+    if (preferredStory) {
+      currentStory.value = preferredStory;
+      endingAnalysis.value = preferredStory.meta?.endingAnalysis || null;
+      loading.value = false;
+    }
+  }
+
   try {
     const result = await listStories();
     stories.value = result.stories || [];
-    if (stories.value[0]?.id) {
-      await openStory(stories.value[0].id);
+    if (cachedUser?.userId) {
+      writeStoriesCache(cachedUser.userId, stories.value);
+    }
+    const preferredStoryId = targetStoryId || currentStory.value?.id || stories.value[0]?.id;
+    if (preferredStoryId) {
+      await openStory(preferredStoryId);
     }
   } catch (err) {
     error.value = err instanceof Error ? err.message : "加载失败";

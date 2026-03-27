@@ -12,6 +12,8 @@ import {
   startStorySession
 } from "../lib/api";
 import { upsertStoryCache } from "../lib/storyCache";
+import { consumeTransferredStorySession, setTransferredStorySession } from "../lib/storySessionTransfer";
+import { readUserCache } from "../lib/userCache";
 
 const router = useRouter();
 const route = useRoute();
@@ -21,7 +23,7 @@ const error = ref("");
 const saveMessage = ref("");
 const loading = ref(true);
 const loadingLabel = ref("正在进入故事...");
-const saving = ref(false);
+const syncingSave = ref(false);
 const hydratingPackage = ref(false);
 const finalizedPayload = ref(null);
 const currentIndex = ref(-1);
@@ -29,6 +31,11 @@ const endingAnalysis = ref(null);
 const analyzingEnding = ref(false);
 const hydratingChoice = ref(false);
 const pendingChoiceId = ref("");
+const optimisticSavedStoryId = ref("");
+const currentUserId = computed(() => {
+  const cachedUser = readUserCache();
+  return session.value?.userId || session.value?.user?.userId || cachedUser?.userId || "";
+});
 
 const packageData = computed(() => session.value?.package || null);
 const nodeMap = computed(() => {
@@ -62,7 +69,7 @@ const isRevealComplete = computed(() => {
 });
 const isSessionComplete = computed(() => runtime.value?.status === "complete");
 const isEndingNode = computed(() => currentNode.value?.kind === "ending" || isSessionComplete.value);
-const canSave = computed(() => Boolean(session.value?.id) && isSessionComplete.value && !saving.value);
+const canSave = computed(() => Boolean(session.value?.id) && isSessionComplete.value && !syncingSave.value);
 const canRequestEndingAnalysis = computed(() =>
   Boolean(session.value?.id) && isSessionComplete.value && isRevealComplete.value && !endingAnalysis.value && !analyzingEnding.value
 );
@@ -91,9 +98,6 @@ const renderedHistory = computed(() =>
   }))
 );
 const overlayTitle = computed(() => {
-  if (saving.value) {
-    return "正在整理书页";
-  }
   if (analyzingEnding.value) {
     return "正在解读你这颗土豆";
   }
@@ -106,9 +110,6 @@ const overlayTitle = computed(() => {
   return "正在处理";
 });
 const overlayDescription = computed(() => {
-  if (saving.value) {
-    return "土豆正在把这局互动小说装订成可回看的完整记录。";
-  }
   if (analyzingEnding.value) {
     return "SecondMe 正在根据你走出的分支生成一份结局签语。";
   }
@@ -144,6 +145,15 @@ const recommendedUniverses = computed(() => {
 onMounted(async () => {
   const entryType = typeof route.query.entry === "string" ? route.query.entry : "";
   loadingLabel.value = entryType === "custom" ? "第一幕正在落页..." : entryType === "library" ? "正在翻开故事..." : "正在恢复故事会话...";
+    const transferredSession = consumeTransferredStorySession();
+  if (transferredSession?.id) {
+    session.value = transferredSession;
+    runtime.value = restoreRuntime(transferredSession, transferredSession.runtime);
+    persistLocalSession();
+    loading.value = false;
+    return;
+  }
+
   const raw = sessionStorage.getItem("potato-novel-story-session");
   if (!raw) {
     loading.value = false;
@@ -160,7 +170,6 @@ onMounted(async () => {
     session.value = result.session;
     runtime.value = restoreRuntime(result.session, storedSession.runtime);
     persistLocalSession();
-    void hydrateInBackground();
   } catch (err) {
     error.value = err instanceof Error ? err.message : "加载互动故事失败";
   } finally {
@@ -253,19 +262,51 @@ function mergeSession(nextSession) {
   persistLocalSession();
 }
 
-async function hydrateInBackground() {
-  if (!session.value?.id || packageStatus.value === "ready" || hydratingPackage.value) {
-    return;
-  }
-  hydratingPackage.value = true;
-  try {
-    const result = await hydrateStorySession(session.value.id);
-    mergeSession(result.session);
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : "后台补全剧情失败";
-  } finally {
-    hydratingPackage.value = false;
-  }
+function buildCompletedRunPayload() {
+  return {
+    currentNodeId: runtime.value.currentNodeId,
+    endingNodeId: runtime.value.endingNodeId,
+    summary: runtime.value.summary,
+    transcript: runtime.value.entries,
+    state: runtime.value.state,
+    path: runtime.value.path
+  };
+}
+
+function buildOptimisticStoryText() {
+  const title = pageTitle.value ? `《${pageTitle.value.replace(/^《|》$/g, "")}》` : "《未命名互动宇宙》";
+  const metaLines = [
+    title,
+    `玩家身份：${session.value?.meta?.role || "主人公"}`,
+    `创作者：${session.value?.meta?.author || "SecondMe 用户"}`
+  ];
+  const bodyLines = (runtime.value?.entries || [])
+    .filter((item) => item?.text)
+    .map((item) => {
+      const label = item.label ? `【${item.label}】` : "";
+      return `${label}\n${item.text}`;
+    });
+  return [...metaLines, ...bodyLines].join("\n\n");
+}
+
+function buildOptimisticSavedStory(finalized) {
+  const turnCount = finalized?.meta?.turnCount || runtime.value?.path?.length + 1 || 1;
+  return {
+    id: `local-${session.value?.id || Date.now()}`,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    userId: currentUserId.value,
+    meta: {
+      ...(finalized?.meta || {}),
+      opening: finalized?.meta?.opening || session.value?.meta?.opening || "",
+      role: finalized?.meta?.role || session.value?.meta?.role || "",
+      author: finalized?.meta?.author || session.value?.meta?.author || "SecondMe 用户",
+      sessionId: session.value?.id || "",
+      turnCount,
+      endingAnalysis: endingAnalysis.value || finalized?.meta?.endingAnalysis || null
+    },
+    story: finalized?.story || buildOptimisticStoryText()
+  };
 }
 
 function revealNextParagraph() {
@@ -326,7 +367,9 @@ async function chooseOption(choice) {
     hydratingChoice.value = true;
     pendingChoiceId.value = choice.id;
     try {
-      const result = await hydrateStorySession(session.value.id);
+      const result = await hydrateStorySession(session.value.id, {
+        targetNodeId: choice.nextNodeId
+      });
       mergeSession(result.session);
       nextNode = result.session.package?.nodes?.find((item) => item.id === choice.nextNodeId) || nodeMap.value[choice.nextNodeId];
     } catch (err) {
@@ -381,53 +424,57 @@ async function chooseOption(choice) {
 }
 
 async function handleSave() {
-  if (!session.value?.id || !isSessionComplete.value || saving.value) {
+  if (!session.value?.id || !isSessionComplete.value || syncingSave.value) {
     return;
   }
 
-  saving.value = true;
+  syncingSave.value = true;
   error.value = "";
   saveMessage.value = "";
-  try {
-    const finalized = finalizedPayload.value || (await finalizeStorySession({
-      sessionId: session.value.id,
-      completedRun: {
-        currentNodeId: runtime.value.currentNodeId,
-        endingNodeId: runtime.value.endingNodeId,
-        summary: runtime.value.summary,
-        transcript: runtime.value.entries,
-        state: runtime.value.state,
-        path: runtime.value.path
-      }
-    }));
-    finalizedPayload.value = finalized;
-    const result = await saveStory({
-      story: finalized.story,
-      meta: {
-        ...finalized.meta,
-        endingAnalysis: endingAnalysis.value || finalized.meta?.endingAnalysis || null
-      }
-    });
-    upsertStoryCache(result.story?.userId, result.story);
-    session.value = {
-      ...session.value,
-      status: "complete",
-      completedRun: {
-        currentNodeId: runtime.value.currentNodeId,
-        endingNodeId: runtime.value.endingNodeId,
-        summary: runtime.value.summary,
-        transcript: runtime.value.entries,
-        state: runtime.value.state,
-        path: runtime.value.path
-      }
-    };
-    persistLocalSession();
-    saveMessage.value = `已保存，共记录 ${result.story.meta.turnCount || finalized.meta.turnCount || runtime.value.path.length + 1} 个回合。`;
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : "保存失败";
-  } finally {
-    saving.value = false;
-  }
+  const completedRun = buildCompletedRunPayload();
+  const optimisticStory = buildOptimisticSavedStory({
+    meta: {
+      opening: session.value?.meta?.opening || "",
+      role: session.value?.meta?.role || "",
+      author: session.value?.meta?.author || "SecondMe 用户",
+      turnCount: runtime.value?.path?.length + 1 || 1,
+      endingAnalysis: endingAnalysis.value || null
+    },
+    story: buildOptimisticStoryText()
+  });
+  optimisticSavedStoryId.value = optimisticStory.id;
+  upsertStoryCache(optimisticStory.userId, optimisticStory);
+  saveMessage.value = `已加入书架，正在同步云端，共记录 ${optimisticStory.meta.turnCount || runtime.value.path.length + 1} 个回合。`;
+  session.value = {
+    ...session.value,
+    status: "complete",
+    completedRun: completedRun
+  };
+  persistLocalSession();
+
+  void (async () => {
+    try {
+      const finalized = finalizedPayload.value || (await finalizeStorySession({
+        sessionId: session.value.id,
+        completedRun
+      }));
+      finalizedPayload.value = finalized;
+      const result = await saveStory({
+        story: finalized.story,
+        meta: {
+          ...finalized.meta,
+          endingAnalysis: endingAnalysis.value || finalized.meta?.endingAnalysis || null
+        }
+      });
+      upsertStoryCache(result.story?.userId, result.story);
+      saveMessage.value = `已保存，共记录 ${result.story.meta.turnCount || finalized.meta.turnCount || runtime.value.path.length + 1} 个回合。`;
+    } catch (err) {
+      saveMessage.value = "已加入本地书架，但云端同步失败，请稍后重试。";
+      error.value = err instanceof Error ? err.message : "保存失败";
+    } finally {
+      syncingSave.value = false;
+    }
+  })();
 }
 
 async function ensureEndingAnalysis() {
@@ -469,8 +516,14 @@ async function launchRecommendedUniverse(opening) {
       opening,
       role: "主人公"
     });
+    setTransferredStorySession(result.session);
     sessionStorage.setItem("potato-novel-story-session", JSON.stringify(result.session));
-    router.replace("/story/result");
+    router.replace({
+      path: "/story/result",
+      query: {
+        entry: "library"
+      }
+    });
   } catch (err) {
     error.value = err instanceof Error ? err.message : "进入新宇宙失败";
   } finally {
@@ -483,7 +536,7 @@ async function launchRecommendedUniverse(opening) {
   <main class="paper-shell">
     <section class="paper-page relative flex min-h-screen flex-col px-0 pb-0 pt-0">
       <LoadingOverlay
-        :visible="saving || analyzingEnding || hydratingChoice || (hydratingPackage && !currentNodeLoaded)"
+        :visible="analyzingEnding || hydratingChoice || (hydratingPackage && !currentNodeLoaded)"
         :title="overlayTitle"
         :description="overlayDescription"
       />
@@ -504,7 +557,7 @@ async function launchRecommendedUniverse(opening) {
           :disabled="!canSave"
           @click="handleSave"
         >
-          {{ saving ? "保存中" : isSessionComplete ? "保存书架" : "未完待续" }}
+          {{ syncingSave ? "同步中" : isSessionComplete ? "保存书架" : "未完待续" }}
         </button>
           </div>
         </div>

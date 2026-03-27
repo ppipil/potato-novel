@@ -1,49 +1,100 @@
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || window.location.origin;
+const FRONTEND_DEBUG_KEY = "potato-novel-debug-frontend";
+
+function isFrontendDebugEnabled() {
+  try {
+    return localStorage.getItem(FRONTEND_DEBUG_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function debugLog(event, payload) {
+  if (!isFrontendDebugEnabled()) {
+    return;
+  }
+  console.log(`[potato-frontend] ${event}`, payload);
+}
+
+async function parseJsonResponse(response) {
+  const text = await response.text();
+  if (!text) {
+    return {};
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+async function fetchJson(path, options = {}, fallbackMessage = "Request failed") {
+  const startedAt = performance.now();
+  const requestInfo = {
+    url: `${API_BASE_URL}${path}`,
+    method: options.method || "GET",
+    body: options.body ? JSON.parse(options.body) : undefined
+  };
+  debugLog("request", requestInfo);
+
+  const response = await fetch(requestInfo.url, {
+    credentials: "include",
+    ...options
+  });
+  const elapsedMs = Math.round(performance.now() - startedAt);
+  const payload = await parseJsonResponse(response);
+
+  if (!response.ok) {
+    debugLog("response-error", {
+      ...requestInfo,
+      status: response.status,
+      elapsedMs,
+      payload
+    });
+    const errorMessage =
+      typeof payload === "string"
+        ? payload
+        : payload?.detail?.message || payload?.detail || payload?.message || fallbackMessage;
+    throw new Error(errorMessage || fallbackMessage);
+  }
+
+  debugLog("response", {
+    ...requestInfo,
+    status: response.status,
+    elapsedMs,
+    payload
+  });
+  return payload;
+}
 
 export async function getCurrentUser() {
-  const response = await fetch(`${API_BASE_URL}/api/me`, {
-    credentials: "include"
-  });
-  return response.json();
+  return fetchJson("/api/me");
 }
 
 export async function exchangeCode(payload) {
-  const response = await fetch(`${API_BASE_URL}/api/auth/exchange`, {
+  return fetchJson("/api/auth/exchange", {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
     },
-    credentials: "include",
     body: JSON.stringify(payload)
-  });
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(error || "OAuth exchange failed");
-  }
-  return response.json();
+  }, "OAuth exchange failed");
 }
 
 export async function logout() {
-  await fetch(`${API_BASE_URL}/api/auth/logout`, {
+  await fetchJson("/api/auth/logout", {
     method: "POST",
-    credentials: "include"
   });
 }
 
 async function postJson(path, payload, fallbackMessage) {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  return fetchJson(path, {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
     },
-    credentials: "include",
     body: JSON.stringify(payload)
-  });
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(error || fallbackMessage);
-  }
-  return response.json();
+  }, fallbackMessage);
 }
 
 export async function startStorySession(payload) {
@@ -79,40 +130,19 @@ export async function saveStory(payload) {
 }
 
 export async function getStorySession(sessionId) {
-  const response = await fetch(`${API_BASE_URL}/api/story/sessions/${sessionId}`, {
-    credentials: "include"
-  });
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(error || "Story session fetch failed");
-  }
-  return response.json();
+  return fetchJson(`/api/story/sessions/${sessionId}`, {}, "Story session fetch failed");
 }
 
-export async function hydrateStorySession(sessionId) {
-  return postJson(`/api/story/sessions/${sessionId}/hydrate`, {}, "Story session hydrate failed");
+export async function hydrateStorySession(sessionId, payload = {}) {
+  return postJson(`/api/story/sessions/${sessionId}/hydrate`, payload, "Story session hydrate failed");
 }
 
 export async function listStories() {
-  const response = await fetch(`${API_BASE_URL}/api/stories`, {
-    credentials: "include"
-  });
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(error || "Story list failed");
-  }
-  return response.json();
+  return fetchJson("/api/stories", {}, "Story list failed");
 }
 
 export async function getStory(storyId) {
-  const response = await fetch(`${API_BASE_URL}/api/stories/${storyId}`, {
-    credentials: "include"
-  });
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(error || "Story fetch failed");
-  }
-  return response.json();
+  return fetchJson(`/api/stories/${storyId}`, {}, "Story fetch failed");
 }
 
 export async function cacheStoryEndingAnalysis(storyId, payload) {

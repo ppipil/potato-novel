@@ -1086,6 +1086,8 @@ def _find_reusable_package(sessions: list[dict[str, Any]], user_id: str, opening
             continue
         if item.get("kind") != "story_package":
             continue
+        if item.get("completedRun"):
+            continue
         if item.get("packageStatus") not in {"ready", "hydrating"}:
             continue
         package = item.get("package", {})
@@ -1530,10 +1532,15 @@ async def _hydrate_story_package_nodes(
     access_token: str,
     opening: str,
     role: str,
+    target_node_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     package = session_record.get("package", {})
     skeleton_nodes = package.get("nodes", [])
-    pending_nodes = [node for node in skeleton_nodes if not node.get("loaded")]
+    pending_nodes = [
+        node
+        for node in skeleton_nodes
+        if not node.get("loaded") and (target_node_ids is None or node.get("id") in target_node_ids)
+    ]
     if not pending_nodes:
         package["hydratedNodeIds"] = sorted({node.get("id") for node in skeleton_nodes if node.get("id")})
         return package
@@ -1544,8 +1551,9 @@ async def _hydrate_story_package_nodes(
             hydrated_ids.add(node["id"])
 
     updated_nodes: list[dict[str, Any]] = []
+    pending_node_id_set = {node.get("id") for node in pending_nodes if node.get("id")}
     for node in skeleton_nodes:
-        if node.get("loaded"):
+        if node.get("loaded") or node.get("id") not in pending_node_id_set:
             updated_nodes.append(node)
             continue
         content = await _generate_story_node_content(
@@ -2261,18 +2269,25 @@ async def get_story_session(session_id: str, request: Request) -> JSONResponse:
 async def hydrate_story_session(session_id: str, request: Request) -> JSONResponse:
     _require_env()
     server_session = _get_server_session(request)
+    body = await request.json()
+    target_node_id = _clean_model_text(body.get("targetNodeId", ""))
     sessions, story_session, index = _find_session(session_id, server_session["user"].get("userId"))
     if story_session.get("kind") != "story_package":
         raise HTTPException(status_code=400, detail="Story session does not support hydration")
 
     package = story_session.get("package", {})
-    pending_nodes = [node for node in package.get("nodes", []) if not node.get("loaded")]
+    pending_nodes = [
+        node
+        for node in package.get("nodes", [])
+        if not node.get("loaded") and (not target_node_id or node.get("id") == target_node_id)
+    ]
     if pending_nodes:
         story_session["package"] = await _hydrate_story_package_nodes(
             session_record=story_session,
             access_token=server_session["token"]["access_token"],
             opening=story_session.get("meta", {}).get("opening", ""),
             role=story_session.get("meta", {}).get("role", ""),
+            target_node_ids={target_node_id} if target_node_id else None,
         )
         story_session["updatedAt"] = int(time.time())
 

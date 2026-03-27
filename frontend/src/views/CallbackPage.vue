@@ -1,7 +1,8 @@
 <script setup>
 import { onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { exchangeCode } from "../lib/api";
+import { exchangeCode, getCurrentUser } from "../lib/api";
+import { writeUserCache } from "../lib/userCache";
 
 const route = useRoute();
 const router = useRouter();
@@ -30,6 +31,10 @@ onMounted(async () => {
       code: String(code),
       state: String(state)
     });
+    const meResult = await getCurrentUser();
+    if (meResult.authenticated && meResult.user) {
+      writeUserCache(meResult.user);
+    }
     router.replace("/bookshelf");
   } catch (err) {
     error.value = err instanceof Error ? err.message : "未知错误";

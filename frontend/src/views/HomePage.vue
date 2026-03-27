@@ -2,16 +2,27 @@
 import { onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { getCurrentUser, getLoginUrl } from "../lib/api";
+import { clearUserCache, readUserCache, writeUserCache } from "../lib/userCache";
 
 const router = useRouter();
 const loading = ref(true);
 const user = ref(null);
 
 onMounted(async () => {
+  const cachedUser = readUserCache();
+  if (cachedUser) {
+    user.value = cachedUser;
+    loading.value = false;
+  }
+
   try {
     const data = await getCurrentUser();
     if (data.authenticated) {
       user.value = data.user;
+      writeUserCache(data.user);
+    } else {
+      user.value = null;
+      clearUserCache();
     }
   } finally {
     loading.value = false;

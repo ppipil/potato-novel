@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import LoadingOverlay from "../components/LoadingOverlay.vue";
 import { getOpeningSummary, getOpeningTitle, presetOpenings } from "../data/openings";
@@ -12,6 +12,9 @@ import {
   startStorySession
 } from "../lib/api";
 import { readStoriesCache, writeStoriesCache } from "../lib/storyCache";
+import { readStorySessionCache, removeStorySessionCache, writeStorySessionCache } from "../lib/storySessionCache";
+import { setTransferredStorySession } from "../lib/storySessionTransfer";
+import { clearUserCache, readUserCache, writeUserCache } from "../lib/userCache";
 
 const router = useRouter();
 const user = ref(null);
@@ -29,6 +32,7 @@ const activeSeed = ref("");
 const preloadedSession = ref(null);
 const cacheStates = ref({});
 const CACHE_STORAGE_KEY = "potato-novel-cache-states";
+const CACHE_DEBUG_KEY = "potato-novel-debug-cache-states";
 const cacheTimers = new Map();
 const cacheProgressMeta = new Map();
 
@@ -51,9 +55,14 @@ const shelfBooks = computed(() => {
     return stories.value.slice(0, 6).map((item, index) => ({
       id: item.id,
       title: formatBookCoverTitle(item.meta?.opening || "未命名作品"),
-      turns: item.meta?.turnCount || 1,
       tint: coverTints[index % coverTints.length],
-      onClick: () => router.push("/stories")
+      onClick: () =>
+        router.push({
+          path: "/stories",
+          query: {
+            storyId: item.id
+          }
+        })
     }));
   }
 
@@ -95,19 +104,39 @@ function loadCacheStates() {
     if (!parsed || typeof parsed !== "object") {
       return {};
     }
-    return Object.fromEntries(
+    const normalizedMap = Object.fromEntries(
       Object.entries(parsed).map(([opening, state]) => {
         const normalized = typeof state === "object" && state
           ? {
-              status: state.status === "ready" ? "ready" : state.status === "error" ? "error" : "idle",
+              status:
+                state.status === "ready"
+                  ? "ready"
+                  : state.status === "error"
+                    ? "error"
+                    : state.status === "loading"
+                      ? "loading"
+                      : "idle",
               mode: state.mode === "regenerate" ? "regenerate" : "preload",
               sessionId: state.sessionId || "",
-              progress: state.status === "ready" ? 100 : 0
+              progress:
+                state.status === "ready"
+                  ? 100
+                  : state.status === "loading"
+                    ? Math.max(1, Math.min(96, Number(state.progress || 0)))
+                    : 0,
+              phase:
+                state.status === "loading"
+                  ? state.phase || getProgressPhase(Number(state.progress || 0), state.mode === "regenerate" ? "regenerate" : "preload")
+                  : state.status === "ready"
+                    ? "已完成"
+                    : ""
             }
-          : { status: "idle", mode: "preload", sessionId: "", progress: 0 };
+          : { status: "idle", mode: "preload", sessionId: "", progress: 0, phase: "" };
         return [opening, normalized];
       })
     );
+    debugCache("load-cache-states", { raw: parsed, normalized: normalizedMap });
+    return normalizedMap;
   } catch {
     return {};
   }
@@ -115,6 +144,7 @@ function loadCacheStates() {
 
 function persistCacheStates() {
   localStorage.setItem(CACHE_STORAGE_KEY, JSON.stringify(cacheStates.value));
+  debugCache("persist-cache-states", { cacheStates: cacheStates.value });
 }
 
 onMounted(async () => {
@@ -123,31 +153,50 @@ onMounted(async () => {
     customOpening.value = activeSeed.value;
   }
   cacheStates.value = loadCacheStates();
+  resumeLoadingStates();
+  const cachedUser = readUserCache();
+  if (cachedUser) {
+    user.value = cachedUser;
+    const cachedStories = readStoriesCache(cachedUser.userId || "");
+    if (cachedStories.length) {
+      stories.value = cachedStories;
+      bootstrapping.value = false;
+    }
+  }
   try {
     const meResult = await getCurrentUser();
     if (!meResult.authenticated) {
+      clearUserCache();
       router.replace("/");
       return;
     }
     user.value = meResult.user;
+    writeUserCache(meResult.user);
 
     const userId = user.value?.userId || "";
     const cachedStories = readStoriesCache(userId);
     if (cachedStories.length) {
-      stories.value = cachedStories;
-      bootstrapping.value = false;
       void refreshStories(userId);
       return;
     }
 
     await refreshStories(userId);
   } catch {
-    router.replace("/");
-    return;
+    if (!user.value) {
+      clearUserCache();
+      router.replace("/");
+      return;
+    }
   } finally {
     if (bootstrapping.value) {
       bootstrapping.value = false;
     }
+  }
+});
+
+onUnmounted(() => {
+  for (const opening of cacheTimers.keys()) {
+    stopCacheProgress(opening);
   }
 });
 
@@ -162,14 +211,35 @@ function getCacheState(opening) {
 }
 
 function setCacheState(opening, nextState) {
+  const previous = getCacheState(opening);
   cacheStates.value = {
     ...cacheStates.value,
     [opening]: {
-      ...getCacheState(opening),
+      ...previous,
       ...nextState
     }
   };
+  debugCache("set-cache-state", {
+    opening,
+    previous,
+    next: cacheStates.value[opening]
+  });
   persistCacheStates();
+}
+
+function isCacheDebugEnabled() {
+  try {
+    return localStorage.getItem(CACHE_DEBUG_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function debugCache(event, payload) {
+  if (!isCacheDebugEnabled()) {
+    return;
+  }
+  console.log(`[potato-cache] ${event}`, payload);
 }
 
 function getProgressPhase(progress, mode) {
@@ -185,15 +255,17 @@ function getProgressPhase(progress, mode) {
   if (progress < 82) {
     return mode === "regenerate" ? "校对走向" : "校验章节顺序";
   }
-  if (progress < 96) {
-    return "即将完成";
-  }
-  return "已完成";
+  return "即将完成";
 }
 
 function startCacheProgress(opening, mode) {
   stopCacheProgress(opening);
   cacheProgressMeta.set(opening, { startedAt: Date.now(), mode });
+  debugCache("start-cache-progress", {
+    opening,
+    mode,
+    state: getCacheState(opening)
+  });
   cacheTimers.set(
     opening,
     setInterval(() => {
@@ -224,6 +296,19 @@ function stopCacheProgress(opening) {
     cacheTimers.delete(opening);
   }
   cacheProgressMeta.delete(opening);
+  debugCache("stop-cache-progress", {
+    opening,
+    state: getCacheState(opening)
+  });
+}
+
+function resumeLoadingStates() {
+  for (const [opening, state] of Object.entries(cacheStates.value)) {
+    if (state?.status === "loading") {
+      debugCache("resume-loading-state", { opening, state });
+      startCacheProgress(opening, state.mode === "regenerate" ? "regenerate" : "preload");
+    }
+  }
 }
 
 async function cacheTemplate(opening) {
@@ -243,6 +328,13 @@ async function cacheTemplate(opening) {
     stopCacheProgress(opening);
     setCacheState(opening, { status: "ready", mode: "preload", sessionId: result.session?.id || "", progress: 100, phase: "已完成" });
     preloadedSession.value = result.session;
+    writeStorySessionCache(result.session);
+    debugCache("preload-success", {
+      opening,
+      sessionId: result.session?.id,
+      packageStatus: result.session?.packageStatus,
+      completedRun: Boolean(result.session?.completedRun)
+    });
   } catch (err) {
     stopCacheProgress(opening);
     setCacheState(opening, { status: "error", mode: "preload", sessionId: "", progress: 0, phase: "" });
@@ -269,6 +361,13 @@ async function regenerateTemplateCache(opening) {
     stopCacheProgress(opening);
     setCacheState(opening, { status: "ready", mode: "regenerate", sessionId: result.session?.id || "", progress: 100, phase: "已完成" });
     preloadedSession.value = result.session;
+    writeStorySessionCache(result.session);
+    debugCache("regenerate-success", {
+      opening,
+      sessionId: result.session?.id,
+      packageStatus: result.session?.packageStatus,
+      completedRun: Boolean(result.session?.completedRun)
+    });
   } catch (err) {
     stopCacheProgress(opening);
     setCacheState(opening, { status: "error", mode: "regenerate", sessionId: "", progress: 0, phase: "" });
@@ -300,30 +399,107 @@ async function handleGenerate(openingOverride = "") {
     const isPresetOpening = presetOpenings.includes(openingToUse);
     const cachedState = getCacheState(openingToUse);
     const entryMode = isPresetOpening ? "library" : "custom";
+    let nextSession = null;
+    debugCache("handle-generate-start", {
+      opening: openingToUse,
+      isPresetOpening,
+      entryMode,
+      cachedState
+    });
 
     if (isPresetOpening && cachedState.status === "ready" && cachedState.sessionId) {
       try {
-        const result = await getStorySession(cachedState.sessionId);
-        preloadedSession.value = result.session;
-        sessionStorage.setItem("potato-novel-story-session", JSON.stringify(result.session));
+        const cachedSession = readStorySessionCache(cachedState.sessionId);
+        debugCache("handle-generate-cache-hit", {
+          opening: openingToUse,
+          sessionId: cachedState.sessionId,
+          hasCachedSession: Boolean(cachedSession),
+          completedRun: Boolean(cachedSession?.completedRun)
+        });
+        if (cachedSession?.completedRun) {
+          removeStorySessionCache(cachedState.sessionId);
+          setCacheState(openingToUse, { status: "idle", sessionId: "" });
+          const result = await startStorySession({
+            opening: openingToUse,
+            role: selectedRole.value
+          });
+          nextSession = result.session;
+          writeStorySessionCache(result.session);
+          sessionStorage.setItem("potato-novel-story-session", JSON.stringify(result.session));
+          debugCache("handle-generate-restart-completed-session", {
+            opening: openingToUse,
+            oldSessionId: cachedState.sessionId,
+            newSessionId: result.session?.id
+          });
+        } else if (cachedSession?.id) {
+          preloadedSession.value = cachedSession;
+          nextSession = cachedSession;
+          sessionStorage.setItem("potato-novel-story-session", JSON.stringify(cachedSession));
+          debugCache("handle-generate-open-local-session", {
+            opening: openingToUse,
+            sessionId: cachedSession.id
+          });
+        } else {
+          const result = await getStorySession(cachedState.sessionId);
+          if (result.session?.completedRun) {
+            removeStorySessionCache(cachedState.sessionId);
+            setCacheState(openingToUse, { status: "idle", sessionId: "" });
+            const nextResult = await startStorySession({
+              opening: openingToUse,
+              role: selectedRole.value
+            });
+            nextSession = nextResult.session;
+            writeStorySessionCache(nextResult.session);
+            sessionStorage.setItem("potato-novel-story-session", JSON.stringify(nextResult.session));
+            debugCache("handle-generate-restart-remote-completed-session", {
+              opening: openingToUse,
+              oldSessionId: cachedState.sessionId,
+              newSessionId: nextResult.session?.id
+            });
+          } else {
+          preloadedSession.value = result.session;
+          nextSession = result.session;
+          writeStorySessionCache(result.session);
+          sessionStorage.setItem("potato-novel-story-session", JSON.stringify(result.session));
+          debugCache("handle-generate-open-remote-session", {
+            opening: openingToUse,
+            sessionId: result.session?.id
+          });
+          }
+        }
       } catch {
+        removeStorySessionCache(cachedState.sessionId);
         setCacheState(openingToUse, { status: "idle", sessionId: "" });
         const result = await startStorySession({
           opening: openingToUse,
           role: selectedRole.value
         });
+        nextSession = result.session;
+        writeStorySessionCache(result.session);
         sessionStorage.setItem("potato-novel-story-session", JSON.stringify(result.session));
+        debugCache("handle-generate-recover-from-cache-error", {
+          opening: openingToUse,
+          newSessionId: result.session?.id
+        });
       }
     } else {
       const result = await startStorySession({
         opening: openingToUse,
         role: selectedRole.value
       });
+      nextSession = result.session;
+      writeStorySessionCache(result.session);
       if (isPresetOpening) {
         preloadedSession.value = result.session;
       }
       sessionStorage.setItem("potato-novel-story-session", JSON.stringify(result.session));
+      debugCache("handle-generate-start-session", {
+        opening: openingToUse,
+        sessionId: result.session?.id,
+        isPresetOpening
+      });
     }
+    setTransferredStorySession(nextSession);
     router.push({
       path: "/story/result",
       query: {
@@ -395,9 +571,6 @@ function formatBookCoverTitle(opening) {
               @click="book.onClick"
             >
               <div class="absolute inset-0" :class="book.tint"></div>
-              <div class="absolute right-4 top-4 rounded-xl bg-stone-400/80 px-3 py-2 text-sm text-white">
-                {{ book.turns }} 轮
-              </div>
               <div class="absolute inset-x-0 bottom-0 z-10 px-4 pb-5">
                 <p class="line-clamp-2 font-serif text-base leading-6 text-white">
                   {{ book.title }}
