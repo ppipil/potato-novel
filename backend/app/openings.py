@@ -48,6 +48,7 @@ PRESET_OPENINGS = [
 
 
 def get_opening_title(opening: str) -> str:
+    """从开头文案中提取第一条非空行作为标题。"""
     for line in opening.splitlines():
         line = line.strip()
         if line:
@@ -56,5 +57,6 @@ def get_opening_title(opening: str) -> str:
 
 
 def get_opening_summary(opening: str) -> str:
+    """从开头文案中提取一段简短摘要。"""
     lines = [line.strip() for line in opening.splitlines() if line.strip()]
     return " ".join(lines[1:3])

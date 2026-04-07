@@ -35,6 +35,30 @@ http://localhost:3000/api/auth/callback
 - [SecondMe API Quick Start](https://develop-docs.second.me/en/docs)
 - [OAuth2 Integration Guide](https://develop-docs.second.me/en/docs/oauth2)
 
+## 分层生成实验
+
+当前故事生成正在往“结构层 / 表达层”拆分：
+
+- 后端模板控制故事骨架、状态推进和结局路由
+- SecondMe `act/stream` 负责节点选项生成
+- 火山模型负责节点正文生成
+
+本地需要额外配置这些环境变量：
+
+- `VOLCENGINE_API_KEY`
+- `VOLCENGINE_MODEL`
+- `VOLCENGINE_BASE_URL`
+- `VOLCENGINE_CHAT_PATH`，默认可用 `/chat/completions`
+
+本地测试时把这些值写进 `backend/.env`，不要把真实 key 提交进仓库。部署到 Vercel 时请改用 Vercel 环境变量注入。
+
+可以先用本地脚本单独验证正文链路：
+
+```bash
+cd /Users/pipilu/Documents/Projects/potato-novel/backend
+python3 scripts/test_volcengine_prose.py
+```
+
 ## 本地启动
 
 ### 1. 后端

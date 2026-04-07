@@ -1,30 +1,33 @@
-## 1. Data and Story Source Modeling
+## 1. Source Modeling
 
-- [ ] 1.1 Add a persistent source marker for story packages so the backend can distinguish fixed library packages from custom-generated packages.
-- [ ] 1.2 Define the database read path for fixed library stories and verify the backend can return a stored package without invoking generation.
-- [ ] 1.3 Prepare a minimal seed or import workflow for at least one library story package to validate the new model end to end.
+- [x] 1.1 Add or clarify a `source_type` marker so sessions can distinguish `library` and `custom`.
+- [x] 1.2 Define the storage model for prebuilt library story packages.
+- [x] 1.3 Define how custom story sessions persist their generated package payload.
 
-## 2. Library Loading Flow
+## 2. Library Story Flow
 
-- [ ] 2.1 Replace the current template preload entry path so library stories load stored packages instead of calling the runtime generation flow.
-- [ ] 2.2 Update bookshelf card states and wording from download/pre-cache semantics to loading/entering semantics for library stories.
-- [ ] 2.3 Remove or adapt legacy library-only preload state handling that assumes every template story needs per-user generation.
+- [x] 2.1 Add a backend read path for library story packages that does not invoke runtime generation.
+- [x] 2.2 Add a start/resume session path for library stories that creates progress without regenerating content.
+- [x] 2.3 Remove template-story dependence on `preload`, `regenerate`, and `hydrate` semantics during normal play.
+- [x] 2.4 Update bookshelf wording so library cards express enter/continue semantics instead of download/cache semantics.
 
-## 3. Custom Story Generation Flow
+## 3. Custom Story Flow
 
-- [ ] 3.1 Separate the custom creation entry path from library loading so freeform openings always start the runtime generation workflow.
-- [ ] 3.2 Introduce explicit generation phases for custom stories, including skeleton, opening, first-branch, and ready-to-enter.
-- [ ] 3.3 Update the custom creation UI to show phase-based progress and an approximate wait expectation.
-- [ ] 3.4 Allow the reader to enter a custom story once the opening slice is ready while later nodes continue hydrating in the background.
+- [x] 3.1 Add a dedicated custom story creation path separate from library story entry.
+- [x] 3.2 Define a Doubao-only generation contract for custom stories.
+- [x] 3.3 Split custom generation into two Doubao-backed steps: skeleton generation and prose/choices completion.
+- [x] 3.4 Ensure a generated custom story enters reading as a ready-to-play package, not as a hydrate-driven partial package.
+- [x] 3.5 Update custom-story UI wording to reflect generation rather than loading.
 
-## 4. AI Persona Guidance
+## 4. Unified Session Playback
 
-- [ ] 4.1 Add a backend endpoint contract for lightweight persona guidance using the current node context and available choices.
-- [ ] 4.2 Update the reading UI to request persona guidance without blocking manual choice selection.
-- [ ] 4.3 Define how persona guidance output is rendered, including recommendation text and explanation while preserving user agency.
+- [x] 4.1 Define a unified session read contract for both library and custom stories.
+- [x] 4.2 Define a unified `choose` progression contract that advances current node, path, and state without runtime generation in the template path.
+- [x] 4.3 Preserve finalize/save/ending-analysis behavior across both story sources.
 
-## 5. Validation and Migration
+## 5. Cleanup and Validation
 
-- [ ] 5.1 Verify that library stories no longer invoke story package generation during normal entry.
-- [ ] 5.2 Verify that custom story generation still produces playable sessions and that its phases remain understandable to users.
-- [ ] 5.3 Verify that saved stories, history playback, and ending interpretation continue to work across both story sources.
+- [x] 5.1 Verify library stories no longer call model generation during normal entry or normal node progression.
+- [x] 5.2 Verify custom stories only call Doubao during story creation, not during normal node progression.
+- [x] 5.3 Verify story refresh, resume, back navigation, and completion remain understandable across both sources.
+- [x] 5.4 Remove or deprecate obsolete UI and backend assumptions that every template story needs runtime hydration.

@@ -19,7 +19,7 @@ defineProps({
   <transition name="fade">
     <div
       v-if="visible"
-      class="fixed inset-0 z-[80] flex items-center justify-center bg-paper-900/12 px-6 backdrop-blur-[2px]"
+      class="pointer-events-none fixed inset-0 z-[20] flex items-center justify-center bg-paper-900/12 px-6 backdrop-blur-[2px]"
     >
       <div class="glass-panel w-full max-w-[17rem] rounded-[28px] px-6 py-6 text-center shadow-[0_10px_40px_-10px_rgba(74,59,50,0.2)]">
         <div class="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-paper-50 shadow-[0_2px_12px_rgba(0,0,0,0.04)]">

@@ -6,6 +6,7 @@ from .config import settings
 
 
 def build_integration_manifest(base_url: str, app_id: str = "") -> dict[str, Any]:
+    """构造 SecondMe 集成所需的 manifest。"""
     return {
         "skill": {
             "key": "potato-novel",
@@ -65,4 +66,5 @@ def build_integration_manifest(base_url: str, app_id: str = "") -> dict[str, Any
 
 
 def public_base_url() -> str:
+    """返回对外公开访问使用的基础 URL。"""
     return getattr(settings, "public_base_url", "").rstrip("/")

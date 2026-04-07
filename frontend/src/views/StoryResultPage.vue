@@ -1,17 +1,15 @@
 <script setup>
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import LoadingOverlay from "../components/LoadingOverlay.vue";
-import { presetOpenings, getOpeningTitle, getOpeningSummary } from "../data/openings";
 import {
   analyzeStoryEnding,
-  finalizeStorySession,
-  getStorySession,
-  hydrateStorySession,
+  generateLibraryStorySeed,
+  generateCustomStorySession,
   saveStory,
-  startStorySession
+  startLibraryStoryFromSeed
 } from "../lib/api";
-import { upsertStoryCache } from "../lib/storyCache";
+import { readLibrarySessionCache, readLibraryStoriesCache, upsertStoryCache, writeLibrarySessionCache } from "../lib/storyCache";
 import { consumeTransferredStorySession, setTransferredStorySession } from "../lib/storySessionTransfer";
 import { readUserCache } from "../lib/userCache";
 
@@ -20,18 +18,19 @@ const route = useRoute();
 const session = ref(null);
 const runtime = ref(null);
 const error = ref("");
+const entryTip = ref("");
 const saveMessage = ref("");
 const loading = ref(true);
 const loadingLabel = ref("正在进入故事...");
 const syncingSave = ref(false);
-const hydratingPackage = ref(false);
+const choosingOption = ref(false);
 const finalizedPayload = ref(null);
 const currentIndex = ref(-1);
 const endingAnalysis = ref(null);
 const analyzingEnding = ref(false);
-const hydratingChoice = ref(false);
-const pendingChoiceId = ref("");
 const optimisticSavedStoryId = ref("");
+let choiceAudioContext = null;
+const activeRequestControllers = new Set();
 const currentUserId = computed(() => {
   const cachedUser = readUserCache();
   return session.value?.userId || session.value?.user?.userId || cachedUser?.userId || "";
@@ -49,16 +48,39 @@ const currentNode = computed(() => {
   return nodeMap.value[runtime.value.currentNodeId] || null;
 });
 const currentNodeLoaded = computed(() => Boolean(currentNode.value?.loaded !== false && currentNode.value?.scene));
+
+function cleanDisplayText(text) {
+  let value = String(text || "").trim();
+  while (true) {
+    let updated = value;
+    for (const prefix of ['", "', '","', "', '", ",'", "',", '["', "['", '",', "',"]) {
+      if (updated.startsWith(prefix)) {
+        updated = updated.slice(prefix.length).trimStart();
+      }
+    }
+    if (updated.startsWith("[") && updated.length > 1 && [`"`, "'"].includes(updated[1])) {
+      updated = updated.slice(2).trimStart();
+    }
+    if (updated === value) {
+      break;
+    }
+    value = updated;
+  }
+  return value.trim().replace(/^[\s'",\]]+/, "").trim();
+}
+
 const currentParagraphs = computed(() => {
   const paragraphs = currentNode.value?.paragraphs;
   if (Array.isArray(paragraphs) && paragraphs.length > 0) {
-    return paragraphs;
+    return paragraphs
+      .map((item) => cleanDisplayText(item))
+      .filter(Boolean);
   }
 
-  const scene = currentNode.value?.scene || "";
+  const scene = cleanDisplayText(currentNode.value?.scene || "");
   return scene
     .split(/\n\s*\n+/)
-    .map((item) => item.trim())
+    .map((item) => cleanDisplayText(item))
     .filter(Boolean);
 });
 const visibleParagraphs = computed(() =>
@@ -69,7 +91,7 @@ const isRevealComplete = computed(() => {
 });
 const isSessionComplete = computed(() => runtime.value?.status === "complete");
 const isEndingNode = computed(() => currentNode.value?.kind === "ending" || isSessionComplete.value);
-const canSave = computed(() => Boolean(session.value?.id) && isSessionComplete.value && !syncingSave.value);
+const canSave = computed(() => isSessionComplete.value && !syncingSave.value);
 const canRequestEndingAnalysis = computed(() =>
   Boolean(session.value?.id) && isSessionComplete.value && isRevealComplete.value && !endingAnalysis.value && !analyzingEnding.value
 );
@@ -101,53 +123,104 @@ const overlayTitle = computed(() => {
   if (analyzingEnding.value) {
     return "正在解读你这颗土豆";
   }
-  if (hydratingChoice.value) {
-    return "正在加载下一回合";
-  }
-  if (hydratingPackage.value) {
-    return "正在补全后续剧情";
-  }
   return "正在处理";
 });
 const overlayDescription = computed(() => {
   if (analyzingEnding.value) {
     return "SecondMe 正在根据你走出的分支生成一份结局签语。";
   }
-  if (hydratingChoice.value) {
-    return "你点中的分支还没补完，正在把下一回合接上。";
-  }
-  if (hydratingPackage.value) {
-    return "先让你进入第一幕，后续节点正在后台补齐。";
-  }
   return "请稍候。";
 });
+
+function logStoryGenerationDebug(sessionPayload, source) {
+  const debug = sessionPayload?.package?.debug;
+  if (!debug) {
+    return;
+  }
+  console.info("[potato-story-debug]", {
+    source,
+    sessionId: sessionPayload?.id || "",
+    packageStatus: sessionPayload?.packageStatus || "",
+    structure: debug.structure,
+    choices: debug.choices,
+    prose: debug.prose
+  });
+  try {
+    if (localStorage.getItem("potato-story-debug") === "1") {
+      window.__POTATO_DEBUG_SESSION__ = sessionPayload;
+      window.__POTATO_DEBUG_PACKAGE__ = sessionPayload?.package || null;
+      console.info("[potato-story-debug-full-package]", {
+        source,
+        sessionId: sessionPayload?.id || "",
+        package: sessionPayload?.package || null,
+        runtime: sessionPayload?.runtime || null
+      });
+    }
+  } catch {
+    // ignore debug exposure failures
+  }
+}
+
+function createRequestController() {
+  const controller = new AbortController();
+  activeRequestControllers.add(controller);
+  return controller;
+}
+
+function releaseRequestController(controller) {
+  if (controller) {
+    activeRequestControllers.delete(controller);
+  }
+}
+
+function abortActiveStoryRequests() {
+  for (const controller of activeRequestControllers) {
+    controller.abort();
+  }
+  activeRequestControllers.clear();
+}
 const recommendedUniverses = computed(() => {
   const currentTitle = pageTitle.value;
   const persona = currentState.value?.persona || {};
   const sincerity = persona["真诚"] || 0;
   const scheming = persona["心机"] || 0;
 
-  const preferred = presetOpenings
-    .filter((opening) => getOpeningTitle(opening) !== currentTitle)
+  const libraryStories = readLibraryStoriesCache().rows || [];
+  const preferred = libraryStories
+    .filter((item) => item?.opening && item?.title !== currentTitle)
     .sort((left, right) => {
-      const leftScore = (scheming > sincerity && /怪谈|绞肉机|规则/.test(left) ? 1 : 0) + (sincerity >= scheming && /修养|攻略|婚/.test(left) ? 1 : 0);
-      const rightScore = (scheming > sincerity && /怪谈|绞肉机|规则/.test(right) ? 1 : 0) + (sincerity >= scheming && /修养|攻略|婚/.test(right) ? 1 : 0);
+      const leftOpening = left?.opening || "";
+      const rightOpening = right?.opening || "";
+      const leftScore = (scheming > sincerity && /怪谈|绞肉机|规则/.test(leftOpening) ? 1 : 0) + (sincerity >= scheming && /修养|攻略|婚/.test(leftOpening) ? 1 : 0);
+      const rightScore = (scheming > sincerity && /怪谈|绞肉机|规则/.test(rightOpening) ? 1 : 0) + (sincerity >= scheming && /修养|攻略|婚/.test(rightOpening) ? 1 : 0);
       return rightScore - leftScore;
     });
 
-  return preferred.slice(0, 2).map((opening) => ({
-    opening,
-    title: getOpeningTitle(opening),
-    summary: getOpeningSummary(opening)
-  }));
+  return preferred.slice(0, 2);
 });
 
 onMounted(async () => {
+  const pioneerFromQuery = typeof route.query.pioneer === "string" && route.query.pioneer === "1";
+  entryTip.value = sessionStorage.getItem("potato-novel-entry-tip") || "";
+  if (!entryTip.value && pioneerFromQuery) {
+    entryTip.value = "你是这颗土豆宇宙的播种者，首次生成需要多一点时间。";
+  }
+  const isPioneerEntry = pioneerFromQuery || Boolean(entryTip.value);
+  if (entryTip.value) {
+    sessionStorage.removeItem("potato-novel-entry-tip");
+  }
   const entryType = typeof route.query.entry === "string" ? route.query.entry : "";
-  loadingLabel.value = entryType === "custom" ? "第一幕正在落页..." : entryType === "library" ? "正在翻开故事..." : "正在恢复故事会话...";
-    const transferredSession = consumeTransferredStorySession();
+  loadingLabel.value = isPioneerEntry
+    ? "你是这颗土豆宇宙的播种者，正在播种完整章节..."
+    : entryType === "custom"
+      ? "第一幕正在落页..."
+      : entryType === "library"
+        ? "正在翻开故事..."
+        : "正在恢复故事会话...";
+  const transferredSession = consumeTransferredStorySession();
   if (transferredSession?.id) {
     session.value = transferredSession;
+    logStoryGenerationDebug(transferredSession, "transferred-session");
     runtime.value = restoreRuntime(transferredSession, transferredSession.runtime);
     persistLocalSession();
     loading.value = false;
@@ -166,10 +239,11 @@ onMounted(async () => {
       loading.value = false;
       return;
     }
-    const result = await getStorySession(storedSession.id);
-    session.value = result.session;
-    runtime.value = restoreRuntime(result.session, storedSession.runtime);
+    session.value = storedSession;
+    runtime.value = restoreRuntime(storedSession, storedSession.runtime);
     persistLocalSession();
+    loading.value = false;
+
   } catch (err) {
     error.value = err instanceof Error ? err.message : "加载互动故事失败";
   } finally {
@@ -177,7 +251,14 @@ onMounted(async () => {
   }
 });
 
+onUnmounted(() => {
+  abortActiveStoryRequests();
+});
+
 function goBack() {
+  abortActiveStoryRequests();
+  analyzingEnding.value = false;
+  loading.value = false;
   if (window.history.length > 1) {
     router.back();
     return;
@@ -193,6 +274,156 @@ function buildNodeEntries(node) {
     { turn: node.turn, label: node.stageLabel, text: node.scene },
     ...(node.directorNote ? [{ turn: node.turn, label: "局势提示", text: node.directorNote }] : [])
   ];
+}
+
+function cloneValue(value) {
+  if (typeof structuredClone === "function") {
+    return structuredClone(value);
+  }
+  return JSON.parse(JSON.stringify(value));
+}
+
+function buildLocalSessionFromCachedLibrary(openingId, cachedEntry, role = "主人公") {
+  const cachedSession = cachedEntry?.session;
+  if (!cachedSession?.package?.rootNodeId) {
+    return null;
+  }
+  const nextSession = cloneValue(cachedSession);
+  const rootNode = (nextSession.package?.nodes || []).find((item) => item.id === nextSession.package?.rootNodeId);
+  if (!rootNode) {
+    return null;
+  }
+  nextSession.id = `local-${openingId}-${Date.now()}`;
+  nextSession.status = "ready";
+  nextSession.completedRun = null;
+  nextSession.updatedAt = Date.now();
+  nextSession.meta = {
+    ...(nextSession.meta || {}),
+    role
+  };
+  nextSession.runtime = {
+    currentNodeId: rootNode.id,
+    entries: buildNodeEntries(rootNode),
+    path: [],
+    state: cloneValue(nextSession.package?.initialState || {}),
+    status: rootNode.kind === "ending" ? "complete" : "ongoing",
+    endingNodeId: rootNode.kind === "ending" ? rootNode.id : "",
+    summary: rootNode.kind === "ending" ? (rootNode.summary || rootNode.scene || "") : ""
+  };
+  return nextSession;
+}
+
+function isLibrarySessionCacheUsable(cachedEntry, seedUpdatedAt) {
+  if (!cachedEntry?.session?.package?.rootNodeId) {
+    return false;
+  }
+  const cachedSeedUpdatedAt = Number(cachedEntry?.seedUpdatedAt || 0);
+  const requiredSeedUpdatedAt = Number(seedUpdatedAt || 0);
+  if (requiredSeedUpdatedAt <= 0) {
+    return true;
+  }
+  return cachedSeedUpdatedAt >= requiredSeedUpdatedAt;
+}
+
+function applyChoiceEffects(previousState, choice, nextNode, nextPathLength) {
+  const nextState = {
+    stage: nextNode?.kind === "ending"
+      ? "ending"
+      : Number(nextNode?.turn || 1) <= 1
+        ? "opening"
+        : Number(nextNode?.turn || 1) >= 4
+          ? "climax"
+          : "conflict",
+    flags: [...(previousState?.flags || [])],
+    relationship: { ...(previousState?.relationship || {}) },
+    persona: { ...(previousState?.persona || {}) },
+    turn: Number(nextNode?.turn || nextPathLength || 1),
+    endingHint: ""
+  };
+
+  Object.entries(choice?.effects?.persona || {}).forEach(([key, value]) => {
+    nextState.persona[key] = (nextState.persona[key] || 0) + Number(value || 0);
+  });
+  Object.entries(choice?.effects?.relationship || {}).forEach(([key, value]) => {
+    nextState.relationship[key] = (nextState.relationship[key] || 0) + Number(value || 0);
+  });
+
+  const style = choice?.style || "";
+  if (["trust", "support", "soft"].includes(style) && !nextState.flags.includes("soft_route")) {
+    nextState.flags.push("soft_route");
+  }
+  if (style === "tease" && !nextState.flags.includes("spark_route")) {
+    nextState.flags.push("spark_route");
+  }
+  if (["strategy", "manipulation", "observation"].includes(style) && !nextState.flags.includes("hidden_route")) {
+    nextState.flags.push("hidden_route");
+  }
+  if (nextNode?.kind === "ending") {
+    nextState.endingHint = (nextState.relationship["好感"] || 0) >= 2
+      ? "你把这个宇宙推向了高好感收束。"
+      : "这个宇宙留下了更克制也更耐回味的尾音。";
+  }
+  return nextState;
+}
+
+function playPageTurnSound() {
+  if (typeof window === "undefined") {
+    return;
+  }
+  const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextCtor) {
+    return;
+  }
+
+  try {
+    if (!choiceAudioContext) {
+      choiceAudioContext = new AudioContextCtor();
+    }
+    if (choiceAudioContext.state === "suspended") {
+      void choiceAudioContext.resume();
+    }
+    const now = choiceAudioContext.currentTime + 0.005;
+    const master = choiceAudioContext.createGain();
+    master.gain.setValueAtTime(0.001, now);
+    master.gain.exponentialRampToValueAtTime(0.32, now + 0.01);
+    master.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+    master.connect(choiceAudioContext.destination);
+
+    const toneA = choiceAudioContext.createOscillator();
+    const gainA = choiceAudioContext.createGain();
+    toneA.type = "triangle";
+    toneA.frequency.setValueAtTime(980, now);
+    toneA.frequency.exponentialRampToValueAtTime(620, now + 0.09);
+    gainA.gain.setValueAtTime(0.001, now);
+    gainA.gain.exponentialRampToValueAtTime(0.24, now + 0.008);
+    gainA.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+    toneA.connect(gainA);
+    gainA.connect(master);
+
+    const toneB = choiceAudioContext.createOscillator();
+    const gainB = choiceAudioContext.createGain();
+    toneB.type = "sine";
+    toneB.frequency.setValueAtTime(430, now + 0.03);
+    toneB.frequency.exponentialRampToValueAtTime(260, now + 0.16);
+    gainB.gain.setValueAtTime(0.001, now + 0.03);
+    gainB.gain.exponentialRampToValueAtTime(0.18, now + 0.045);
+    gainB.gain.exponentialRampToValueAtTime(0.001, now + 0.17);
+    toneB.connect(gainB);
+    gainB.connect(master);
+
+    toneA.start(now);
+    toneA.stop(now + 0.11);
+    toneB.start(now + 0.03);
+    toneB.stop(now + 0.18);
+  } catch (err) {
+    try {
+      if (localStorage.getItem("potato-story-debug") === "1") {
+        console.warn("[potato-story-audio] page turn sound failed", err);
+      }
+    } catch {
+      // ignore debug logging failures
+    }
+  }
 }
 
 function createInitialRuntime(sessionPayload) {
@@ -259,6 +490,7 @@ function persistLocalSession() {
 
 function mergeSession(nextSession) {
   session.value = nextSession;
+  logStoryGenerationDebug(nextSession, "merge-session");
   persistLocalSession();
 }
 
@@ -316,115 +548,65 @@ function revealNextParagraph() {
   currentIndex.value += 1;
 }
 
-function applyChoiceEffects(previousState, choice, nextNode, nextPathLength) {
-  const nextState = {
-    stage: nextNode.kind === "ending" ? "ending" : nextNode.turn <= 1 ? "opening" : nextNode.turn >= 4 ? "climax" : "conflict",
-    flags: [...(previousState.flags || [])],
-    relationship: { ...(previousState.relationship || {}) },
-    persona: { ...(previousState.persona || {}) },
-    turn: nextNode.turn || nextPathLength,
-    endingHint: ""
-  };
-
-  for (const [key, value] of Object.entries(choice.effects?.persona || {})) {
-    nextState.persona[key] = (nextState.persona[key] || 0) + Number(value || 0);
-  }
-  for (const [key, value] of Object.entries(choice.effects?.relationship || {})) {
-    nextState.relationship[key] = (nextState.relationship[key] || 0) + Number(value || 0);
-  }
-
-  if (choice.style === "trust" || choice.style === "support" || choice.style === "soft") {
-    if (!nextState.flags.includes("soft_route")) {
-      nextState.flags.push("soft_route");
-    }
-  }
-  if (choice.style === "tease") {
-    if (!nextState.flags.includes("spark_route")) {
-      nextState.flags.push("spark_route");
-    }
-  }
-  if (["strategy", "manipulation", "observation"].includes(choice.style)) {
-    if (!nextState.flags.includes("hidden_route")) {
-      nextState.flags.push("hidden_route");
-    }
-  }
-  if (nextNode.kind === "ending") {
-    nextState.endingHint = (nextState.relationship["好感"] || 0) >= 2
-      ? "你把这个宇宙推向了高好感收束。"
-      : "这个宇宙留下了更克制也更耐回味的尾音。";
-  }
-
-  return nextState;
-}
-
 async function chooseOption(choice) {
-  if (!choice || !currentNode.value || isSessionComplete.value) {
+  if (!choice || !currentNode.value || isSessionComplete.value || choosingOption.value) {
     return;
   }
 
-  let nextNode = nodeMap.value[choice.nextNodeId];
-  if (nextNode && nextNode.loaded === false) {
-    hydratingChoice.value = true;
-    pendingChoiceId.value = choice.id;
-    try {
-      const result = await hydrateStorySession(session.value.id, {
-        targetNodeId: choice.nextNodeId
-      });
-      mergeSession(result.session);
-      nextNode = result.session.package?.nodes?.find((item) => item.id === choice.nextNodeId) || nodeMap.value[choice.nextNodeId];
-    } catch (err) {
-      error.value = err instanceof Error ? err.message : "后续剧情加载失败";
-    } finally {
-      hydratingChoice.value = false;
-      pendingChoiceId.value = "";
-    }
-  }
-  if (!nextNode) {
-    error.value = "故事包里的下一个节点丢失了。";
-    return;
-  }
-
-  const nextPath = [
-    ...(runtime.value?.path || []),
-    {
-      fromNodeId: currentNode.value.id,
-      choiceId: choice.id,
-      choiceText: choice.text,
-      nextNodeId: nextNode.id,
-      turn: currentNode.value.turn,
-      effects: choice.effects || {}
-    }
-  ];
-  const nextEntries = [
-    ...(runtime.value?.entries || []),
-    { turn: currentNode.value.turn, label: "玩家行动", text: choice.text },
-    ...buildNodeEntries(nextNode)
-  ];
-  const nextState = applyChoiceEffects(
-    runtime.value?.state || packageData.value?.initialState || {},
-    choice,
-    nextNode,
-    nextPath.length + 1
-  );
-
-  runtime.value = {
-    currentNodeId: nextNode.id,
-    entries: nextEntries,
-    path: nextPath,
-    state: nextState,
-    status: nextNode.kind === "ending" ? "complete" : "ongoing",
-    endingNodeId: nextNode.kind === "ending" ? nextNode.id : "",
-    summary: nextNode.kind === "ending" ? nextNode.summary || nextNode.scene : runtime.value?.summary || ""
-  };
-  currentIndex.value = -1;
+  choosingOption.value = true;
   error.value = "";
   saveMessage.value = "";
-  persistLocalSession();
-
+  try {
+    const nextNode = nodeMap.value[choice.nextNodeId];
+    if (!nextNode) {
+      throw new Error("下一剧情节点不存在");
+    }
+    playPageTurnSound();
+    const previousState = runtime.value?.state || packageData.value?.initialState || {};
+    const nextPath = [
+      ...(runtime.value?.path || []),
+      {
+        fromNodeId: currentNode.value.id,
+        choiceId: choice.id,
+        choiceText: choice.text,
+        nextNodeId: choice.nextNodeId,
+        turn: currentNode.value.turn,
+        effects: choice.effects || {}
+      }
+    ];
+    const nextEntries = [
+      ...(runtime.value?.entries || []),
+      { turn: currentNode.value.turn, label: "玩家行动", text: choice.text },
+      ...buildNodeEntries(nextNode)
+    ];
+    const nextState = applyChoiceEffects(previousState, choice, nextNode, nextPath.length + 1);
+    runtime.value = {
+      currentNodeId: nextNode.id,
+      entries: nextEntries,
+      path: nextPath,
+      state: nextState,
+      status: nextNode.kind === "ending" ? "complete" : "ongoing",
+      endingNodeId: nextNode.kind === "ending" ? nextNode.id : "",
+      summary: nextNode.kind === "ending" ? (nextNode.summary || nextNode.scene || "") : (runtime.value?.summary || "")
+    };
+    if (runtime.value.status === "complete") {
+      session.value = {
+        ...session.value,
+        status: "complete",
+        completedRun: buildCompletedRunPayload()
+      };
+    }
+    currentIndex.value = -1;
+    persistLocalSession();
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : "推进故事失败";
+  } finally {
+    choosingOption.value = false;
+  }
 }
 
 async function handleSave() {
-  if (!session.value?.id || !isSessionComplete.value || syncingSave.value) {
+  if (!isSessionComplete.value || syncingSave.value) {
     return;
   }
 
@@ -454,10 +636,19 @@ async function handleSave() {
 
   void (async () => {
     try {
-      const finalized = finalizedPayload.value || (await finalizeStorySession({
-        sessionId: session.value.id,
-        completedRun
-      }));
+      const finalized = finalizedPayload.value || {
+        story: buildOptimisticStoryText(),
+        meta: {
+          opening: session.value?.meta?.opening || "",
+          role: session.value?.meta?.role || "",
+          author: session.value?.meta?.author || "SecondMe 用户",
+          turnCount: runtime.value?.path?.length + 1 || 1,
+          status: "complete",
+          state: runtime.value?.state || {},
+          completedRun,
+          package: session.value?.package || null
+        }
+      };
       finalizedPayload.value = finalized;
       const result = await saveStory({
         story: finalized.story,
@@ -478,11 +669,12 @@ async function handleSave() {
 }
 
 async function ensureEndingAnalysis() {
-  if (!session.value?.id || !isSessionComplete.value || endingAnalysis.value || analyzingEnding.value) {
+  if (!isSessionComplete.value || endingAnalysis.value || analyzingEnding.value) {
     return;
   }
 
   analyzingEnding.value = true;
+  const controller = createRequestController();
   try {
     const completedRunPayload = {
       summary: runtime.value.summary,
@@ -491,42 +683,86 @@ async function ensureEndingAnalysis() {
       opening: session.value.meta?.opening || "",
       role: session.value.meta?.role || ""
     };
-    const result = session.value.completedRun
-      ? await analyzeStoryEnding({
-          sessionId: session.value.id
-        })
-      : await analyzeStoryEnding({
-          meta: completedRunPayload,
-          story: runtime.value.summary || currentNode.value?.scene || ""
-        });
+    const result = await analyzeStoryEnding({
+      meta: completedRunPayload,
+      story: runtime.value.summary || currentNode.value?.scene || ""
+    }, { signal: controller.signal });
+    releaseRequestController(controller);
     endingAnalysis.value = result.analysis;
   } catch (err) {
-    error.value = err instanceof Error ? err.message : "尾声分析生成失败";
+    if (err?.name !== "AbortError") {
+      error.value = err instanceof Error ? err.message : "尾声分析生成失败";
+    }
   } finally {
+    releaseRequestController(controller);
     analyzingEnding.value = false;
   }
 }
 
-async function launchRecommendedUniverse(opening) {
+async function launchRecommendedUniverse(libraryStory) {
   loading.value = true;
   error.value = "";
   saveMessage.value = "";
+  const controller = createRequestController();
   try {
-    const result = await startStorySession({
-      opening,
-      role: "主人公"
-    });
+    const isPresetOpening = Boolean(libraryStory?.id && libraryStory?.opening);
+    const result = isPresetOpening
+        ? await (async () => {
+          const storyId = libraryStory.id;
+          const seedUpdatedAt = Number(libraryStory?.seedUpdatedAt || 0);
+          const cachedLibrarySession = readLibrarySessionCache(storyId);
+          const localSession = isLibrarySessionCacheUsable(cachedLibrarySession, seedUpdatedAt)
+            ? buildLocalSessionFromCachedLibrary(storyId, cachedLibrarySession, "主人公")
+            : null;
+          if (localSession) {
+            return { ok: true, session: localSession, reused: false, localCacheHit: true };
+          }
+          try {
+            const remoteResult = await startLibraryStoryFromSeed(
+              storyId,
+              { role: "主人公" },
+              { signal: controller.signal }
+            );
+            if (remoteResult?.session) {
+              writeLibrarySessionCache(storyId, remoteResult.session, { seedUpdatedAt });
+            }
+            return remoteResult;
+          } catch (err) {
+            if (err instanceof Error && err.message.includes("公共内容还没播种完成")) {
+              await generateLibraryStorySeed(storyId, {}, { signal: controller.signal });
+              const seededResult = await startLibraryStoryFromSeed(
+                storyId,
+                { role: "主人公" },
+                { signal: controller.signal }
+              );
+              if (seededResult?.session) {
+                writeLibrarySessionCache(storyId, seededResult.session, { seedUpdatedAt: Date.now() / 1000 });
+              }
+              return seededResult;
+            }
+            throw err;
+          }
+        })()
+      : await generateCustomStorySession(
+          { opening: libraryStory?.opening || "", role: "主人公" },
+          { signal: controller.signal }
+        );
+    releaseRequestController(controller);
     setTransferredStorySession(result.session);
     sessionStorage.setItem("potato-novel-story-session", JSON.stringify(result.session));
-    router.replace({
-      path: "/story/result",
-      query: {
-        entry: "library"
-      }
-    });
+    session.value = result.session;
+    logStoryGenerationDebug(result.session, "launch-recommended-universe");
+    runtime.value = restoreRuntime(result.session, result.session.runtime);
+    endingAnalysis.value = null;
+    finalizedPayload.value = null;
+    currentIndex.value = -1;
+    persistLocalSession();
   } catch (err) {
-    error.value = err instanceof Error ? err.message : "进入新宇宙失败";
+    if (err?.name !== "AbortError") {
+      error.value = err instanceof Error ? err.message : "进入新宇宙失败";
+    }
   } finally {
+    releaseRequestController(controller);
     loading.value = false;
   }
 }
@@ -536,12 +772,12 @@ async function launchRecommendedUniverse(opening) {
   <main class="paper-shell">
     <section class="paper-page relative flex min-h-screen flex-col px-0 pb-0 pt-0">
       <LoadingOverlay
-        :visible="analyzingEnding || hydratingChoice || (hydratingPackage && !currentNodeLoaded)"
+        :visible="analyzingEnding"
         :title="overlayTitle"
         :description="overlayDescription"
       />
 
-      <header class="glass-panel sticky top-0 z-30 shrink-0 border-b border-paper-200/70 px-6 py-4 shadow-[0_10px_28px_rgba(74,59,50,0.08)] sm:px-8">
+      <header class="glass-panel fixed left-1/2 top-0 z-30 w-full max-w-md -translate-x-1/2 shrink-0 border-b border-paper-200/70 px-6 py-4 shadow-[0_10px_28px_rgba(74,59,50,0.08)] sm:px-8">
         <div class="flex items-center justify-between gap-3">
           <button
             class="active-press inline-flex h-11 min-w-11 items-center justify-center rounded-full border border-paper-200 bg-white/88 px-3 text-xl text-paper-700 shadow-[0_4px_14px_rgba(0,0,0,0.06)]"
@@ -566,7 +802,7 @@ async function launchRecommendedUniverse(opening) {
       <div v-if="loading" class="flex flex-1 items-center justify-center px-8 py-16 text-paper-800">{{ loadingLabel }}</div>
       <div v-else-if="!session || !runtime || !currentNode" class="flex flex-1 items-center justify-center px-8 py-16 text-paper-800">还没有开始互动故事，请先回到书架创建一个开局。</div>
       <div v-else class="flex min-h-0 flex-1 flex-col">
-        <div class="hide-scrollbar flex-1 overflow-y-auto px-6 pb-12 pt-6 sm:px-8" @click="revealNextParagraph">
+        <div class="hide-scrollbar flex-1 overflow-y-auto px-6 pb-12 pt-28 sm:px-8" @click="revealNextParagraph">
           <div class="space-y-8">
             <div
               v-for="item in renderedHistory"
@@ -601,6 +837,13 @@ async function launchRecommendedUniverse(opening) {
               <p class="text-center font-serif text-[2.1rem] leading-[1.8] text-paper-900">
                 {{ currentNode.stageLabel }}
               </p>
+
+              <div
+                v-if="entryTip"
+                class="rounded-[24px] border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700"
+              >
+                {{ entryTip }}
+              </div>
 
               <div
                 v-if="isEndingNode"
@@ -654,7 +897,7 @@ async function launchRecommendedUniverse(opening) {
                     :key="item.title"
                     class="active-press w-full rounded-[22px] border border-paper-200 bg-paper-50 px-4 py-4 text-left"
                     :disabled="loading"
-                    @click="launchRecommendedUniverse(item.opening)"
+                    @click.stop="launchRecommendedUniverse(item)"
                   >
                     <p class="font-serif text-[1.02rem] text-paper-900">{{ item.title }}</p>
                     <p class="mt-1 line-clamp-2 text-sm leading-6 text-paper-700/70">{{ item.summary }}</p>
@@ -704,7 +947,7 @@ async function launchRecommendedUniverse(opening) {
               :key="choice.id"
               class="active-press w-full rounded-[24px] border px-5 py-5 text-left shadow-[0_2px_12px_rgba(0,0,0,0.04)]"
               :class="choice.isRecommended ? 'border-accent-500/55 bg-white text-paper-900' : 'border-paper-200 bg-white text-paper-900'"
-              :disabled="hydratingChoice"
+              :disabled="choosingOption"
               @click="chooseOption(choice)"
             >
               <div class="flex items-start gap-3">
@@ -712,7 +955,6 @@ async function launchRecommendedUniverse(opening) {
                 <div class="space-y-1">
                   <p class="text-[1.08rem] leading-8">{{ choice.text }}</p>
                   <p class="text-sm text-paper-700/55">
-                    <span v-if="pendingChoiceId === choice.id">正在加载下一回合 · </span>
                     {{ choice.tone || choice.style }}
                     <span v-if="choice.isRecommended"> · 推荐</span>
                     <span v-if="choice.isAiChoice"> · AI 会选</span>
