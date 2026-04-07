@@ -22,6 +22,10 @@ class Settings:
     public_base_url: str = os.getenv("PUBLIC_BASE_URL", "http://localhost:8000")
     secondme_app_id: str = os.getenv("SECONDME_APP_ID", "")
     database_url: str = os.getenv("DATABASE_URL", "")
+    volcengine_api_key: str = os.getenv("VOLCENGINE_API_KEY", "")
+    volcengine_model: str = os.getenv("VOLCENGINE_MODEL", "")
+    volcengine_base_url: str = os.getenv("VOLCENGINE_BASE_URL", "")
+    volcengine_chat_path: str = os.getenv("VOLCENGINE_CHAT_PATH", "/chat/completions")
 
 
 settings = Settings()

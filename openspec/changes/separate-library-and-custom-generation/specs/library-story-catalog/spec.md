@@ -6,12 +6,20 @@ The system SHALL treat library stories as prebuilt interactive story packages st
 #### Scenario: Entering a library story
 - **WHEN** a user opens a story from the library or bookshelf template area
 - **THEN** the backend returns the stored package for that story
-- **AND** the client enters local playback without requesting a new skeleton or full node generation
+- **AND** the client enters local playback without requesting a new skeleton or runtime node generation
 
 #### Scenario: Reusing the same library story across users
 - **WHEN** two different authenticated users open the same library story
 - **THEN** the system serves the same underlying story package content to both users
 - **AND** user-specific state remains limited to reading progress, choices, and interpretation features
+
+### Requirement: Library story progression SHALL not depend on runtime hydration
+The system SHALL allow normal node progression for library stories without model-backed runtime hydration.
+
+#### Scenario: Choosing within a library story
+- **WHEN** a user selects an option in a library story
+- **THEN** the system advances session progress using the stored package
+- **AND** the progression does not require runtime prose or choice generation for that node
 
 ### Requirement: Library story UI SHALL express loading rather than generation
 The library UI SHALL describe story access as loading or entering fixed content. It SHALL NOT present library stories with download, pre-cache, or regenerate wording that implies per-user story generation.

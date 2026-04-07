@@ -16,6 +16,14 @@ function debugLog(event, payload) {
   console.log(`[potato-frontend] ${event}`, payload);
 }
 
+function isStoryDebugEnabled() {
+  try {
+    return localStorage.getItem("potato-story-debug") === "1";
+  } catch {
+    return false;
+  }
+}
+
 async function parseJsonResponse(response) {
   const text = await response.text();
   if (!text) {
@@ -30,6 +38,10 @@ async function parseJsonResponse(response) {
 
 async function fetchJson(path, options = {}, fallbackMessage = "Request failed") {
   const startedAt = performance.now();
+  const mergedHeaders = {
+    ...(options.headers || {}),
+    ...(isStoryDebugEnabled() ? { "X-Story-Debug": "1" } : {})
+  };
   const requestInfo = {
     url: `${API_BASE_URL}${path}`,
     method: options.method || "GET",
@@ -39,7 +51,8 @@ async function fetchJson(path, options = {}, fallbackMessage = "Request failed")
 
   const response = await fetch(requestInfo.url, {
     credentials: "include",
-    ...options
+    ...options,
+    headers: mergedHeaders
   });
   const elapsedMs = Math.round(performance.now() - startedAt);
   const payload = await parseJsonResponse(response);
@@ -87,54 +100,39 @@ export async function logout() {
   });
 }
 
-async function postJson(path, payload, fallbackMessage) {
+async function postJson(path, payload, fallbackMessage, requestOptions = {}) {
   return fetchJson(path, {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
     },
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
+    ...requestOptions
   }, fallbackMessage);
 }
 
-export async function startStorySession(payload) {
-  return postJson("/api/story/start", payload, "Story start failed");
+export async function listLibraryStories(requestOptions = {}) {
+  return fetchJson("/api/library-stories", requestOptions, "Library story list failed");
 }
 
-export async function preloadStoryPackage(payload) {
-  return postJson("/api/story/preload", payload, "Story preload failed");
+export async function generateLibraryStorySeed(storyId, payload = {}, requestOptions = {}) {
+  return postJson(`/api/library-stories/${storyId}/generate-seed`, payload, "Library seed generation failed", requestOptions);
 }
 
-export async function regenerateStoryPackage(payload) {
-  return postJson("/api/story/regenerate", payload, "Story regenerate failed");
+export async function startLibraryStoryFromSeed(storyId, payload, requestOptions = {}) {
+  return postJson(`/api/library-stories/${storyId}/start-from-seed`, payload, "Library story start from seed failed", requestOptions);
 }
 
-export async function continueStorySession(payload) {
-  return postJson("/api/story/continue", payload, "Story continuation failed");
+export async function generateCustomStorySession(payload, requestOptions = {}) {
+  return postJson("/api/custom-stories/generate", payload, "Custom story generation failed", requestOptions);
 }
 
-export async function finalizeStorySession(payload) {
-  return postJson("/api/story/finalize", payload, "Story finalization failed");
+export async function analyzeStoryEnding(payload, requestOptions = {}) {
+  return postJson("/api/story/analyze-ending", payload, "Story ending analysis failed", requestOptions);
 }
 
-export async function analyzeStoryEnding(payload) {
-  return postJson("/api/story/analyze-ending", payload, "Story ending analysis failed");
-}
-
-export async function generateStory(payload) {
-  return startStorySession(payload);
-}
-
-export async function saveStory(payload) {
-  return postJson("/api/story/save", payload, "Story save failed");
-}
-
-export async function getStorySession(sessionId) {
-  return fetchJson(`/api/story/sessions/${sessionId}`, {}, "Story session fetch failed");
-}
-
-export async function hydrateStorySession(sessionId, payload = {}) {
-  return postJson(`/api/story/sessions/${sessionId}/hydrate`, payload, "Story session hydrate failed");
+export async function saveStory(payload, requestOptions = {}) {
+  return postJson("/api/story/save", payload, "Story save failed", requestOptions);
 }
 
 export async function listStories() {
@@ -143,6 +141,10 @@ export async function listStories() {
 
 export async function getStory(storyId) {
   return fetchJson(`/api/stories/${storyId}`, {}, "Story fetch failed");
+}
+
+export async function deleteStory(storyId) {
+  return fetchJson(`/api/stories/${storyId}`, { method: "DELETE" }, "Story delete failed");
 }
 
 export async function cacheStoryEndingAnalysis(storyId, payload) {
