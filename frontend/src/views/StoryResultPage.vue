@@ -313,6 +313,18 @@ function buildLocalSessionFromCachedLibrary(openingId, cachedEntry, role = "主�
   return nextSession;
 }
 
+function isLibrarySessionCacheUsable(cachedEntry, seedUpdatedAt) {
+  if (!cachedEntry?.session?.package?.rootNodeId) {
+    return false;
+  }
+  const cachedSeedUpdatedAt = Number(cachedEntry?.seedUpdatedAt || 0);
+  const requiredSeedUpdatedAt = Number(seedUpdatedAt || 0);
+  if (requiredSeedUpdatedAt <= 0) {
+    return true;
+  }
+  return cachedSeedUpdatedAt >= requiredSeedUpdatedAt;
+}
+
 function applyChoiceEffects(previousState, choice, nextNode, nextPathLength) {
   const nextState = {
     stage: nextNode?.kind === "ending"
@@ -695,10 +707,13 @@ async function launchRecommendedUniverse(libraryStory) {
   try {
     const isPresetOpening = Boolean(libraryStory?.id && libraryStory?.opening);
     const result = isPresetOpening
-      ? await (async () => {
+        ? await (async () => {
           const storyId = libraryStory.id;
+          const seedUpdatedAt = Number(libraryStory?.seedUpdatedAt || 0);
           const cachedLibrarySession = readLibrarySessionCache(storyId);
-          const localSession = buildLocalSessionFromCachedLibrary(storyId, cachedLibrarySession, "主人公");
+          const localSession = isLibrarySessionCacheUsable(cachedLibrarySession, seedUpdatedAt)
+            ? buildLocalSessionFromCachedLibrary(storyId, cachedLibrarySession, "主人公")
+            : null;
           if (localSession) {
             return { ok: true, session: localSession, reused: false, localCacheHit: true };
           }
@@ -709,7 +724,7 @@ async function launchRecommendedUniverse(libraryStory) {
               { signal: controller.signal }
             );
             if (remoteResult?.session) {
-              writeLibrarySessionCache(storyId, remoteResult.session);
+              writeLibrarySessionCache(storyId, remoteResult.session, { seedUpdatedAt });
             }
             return remoteResult;
           } catch (err) {
@@ -721,7 +736,7 @@ async function launchRecommendedUniverse(libraryStory) {
                 { signal: controller.signal }
               );
               if (seededResult?.session) {
-                writeLibrarySessionCache(storyId, seededResult.session);
+                writeLibrarySessionCache(storyId, seededResult.session, { seedUpdatedAt: Date.now() / 1000 });
               }
               return seededResult;
             }

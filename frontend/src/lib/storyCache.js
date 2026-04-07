@@ -125,14 +125,15 @@ export function readLibrarySessionCache(openingId) {
   return cacheMap[openingId] || null;
 }
 
-export function writeLibrarySessionCache(openingId, sessionPayload) {
+export function writeLibrarySessionCache(openingId, sessionPayload, metadata = {}) {
   if (!openingId || !sessionPayload) {
     return;
   }
   const cacheMap = readLibrarySessionCacheMap();
   cacheMap[openingId] = {
     session: sessionPayload,
-    updatedAt: Date.now()
+    updatedAt: Date.now(),
+    seedUpdatedAt: Number(metadata.seedUpdatedAt || 0),
   };
   writeLibrarySessionCacheMap(cacheMap);
 }

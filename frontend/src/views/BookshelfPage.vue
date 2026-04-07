@@ -180,6 +180,18 @@ function isLibraryStoriesCacheFresh(updatedAt) {
   return Number(updatedAt || 0) > 0 && Date.now() - Number(updatedAt) < LIBRARY_STORIES_CACHE_TTL_MS;
 }
 
+function isLibrarySessionCacheUsable(cachedEntry, seedUpdatedAt) {
+  if (!cachedEntry?.session?.package?.rootNodeId) {
+    return false;
+  }
+  const cachedSeedUpdatedAt = Number(cachedEntry?.seedUpdatedAt || 0);
+  const requiredSeedUpdatedAt = Number(seedUpdatedAt || 0);
+  if (requiredSeedUpdatedAt <= 0) {
+    return true;
+  }
+  return cachedSeedUpdatedAt >= requiredSeedUpdatedAt;
+}
+
 onMounted(async () => {
   console.info("[potato-bookshelf] mounted");
   if (!customOpening.value) {
@@ -214,8 +226,6 @@ onMounted(async () => {
     const userId = user.value?.userId || "";
     if (!isLibraryStoriesCacheFresh(libraryStoriesCache.updatedAt)) {
       await refreshLibraryStories();
-    } else {
-      void refreshLibraryStories();
     }
     const cachedStories = readStoriesCache(userId);
     if (cachedStories.length) {
@@ -469,9 +479,10 @@ async function handleGenerate(openingOverride = "") {
     if (isPresetOpening) {
       const storyId = libraryStoryIdByOpening(openingToUse);
       const seedReady = isLibrarySeedReady(openingToUse);
+      const seedUpdatedAt = libraryStoriesById.value[storyId]?.seedUpdatedAt || 0;
       const cachedLibrarySession = readLibrarySessionCache(storyId);
       let seedResult = null;
-      const localSession = seedReady && cachedLibrarySession?.session?.package
+      const localSession = seedReady && isLibrarySessionCacheUsable(cachedLibrarySession, seedUpdatedAt)
         ? buildLocalSessionFromCachedLibrary(storyId, cachedLibrarySession, selectedRole.value)
         : null;
       if (localSession) {
@@ -492,7 +503,9 @@ async function handleGenerate(openingOverride = "") {
           "从数据库打开故事超时，请稍后重试。"
         );
         if (result?.session) {
-          writeLibrarySessionCache(storyId, result.session);
+          writeLibrarySessionCache(storyId, result.session, {
+            seedUpdatedAt: libraryStoriesById.value[storyId]?.seedUpdatedAt || 0,
+          });
         }
       }
       if (seedResult?.seedReady) {
