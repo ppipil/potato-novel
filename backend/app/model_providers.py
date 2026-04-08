@@ -13,6 +13,7 @@ from .story_text import _extract_story_from_sse
 
 
 DebugLogger = Optional[Callable[[str, dict[str, Any]], None]]
+MODEL_PROVIDER_TIMEOUT_SECONDS = 180
 
 
 # This module isolates model-provider specific HTTP calls and response parsing
@@ -120,7 +121,7 @@ def _openai_delta_text(payload: Any) -> str:
 async def _call_secondme_chat(access_token: str, prompt: str) -> str:
     """调用 SecondMe chat 流接口，返回完整文本。"""
     try:
-        async with httpx.AsyncClient(timeout=60, trust_env=False) as client:
+        async with httpx.AsyncClient(timeout=MODEL_PROVIDER_TIMEOUT_SECONDS, trust_env=False) as client:
             chat_response = await client.post(
                 "https://api.mindverse.com/gate/lab/api/secondme/chat/stream",
                 headers={
@@ -168,7 +169,7 @@ async def _call_secondme_act(
             },
         )
     try:
-        async with httpx.AsyncClient(timeout=60, trust_env=False) as client:
+        async with httpx.AsyncClient(timeout=MODEL_PROVIDER_TIMEOUT_SECONDS, trust_env=False) as client:
             act_response = await client.post(
                 "https://api.mindverse.com/gate/lab/api/secondme/act/stream",
                 headers={
@@ -228,7 +229,7 @@ async def _call_volcengine_prose(
     ]
     for attempt, cfg in enumerate(attempt_plan):
         try:
-            async with httpx.AsyncClient(timeout=60, trust_env=_volcengine_trust_env()) as client:
+            async with httpx.AsyncClient(timeout=MODEL_PROVIDER_TIMEOUT_SECONDS, trust_env=_volcengine_trust_env()) as client:
                 response = await client.post(
                     api_url,
                     headers={
@@ -303,7 +304,7 @@ async def _stream_volcengine_prose_chunks(
         )
 
     try:
-        async with httpx.AsyncClient(timeout=60, trust_env=_volcengine_trust_env()) as client:
+        async with httpx.AsyncClient(timeout=MODEL_PROVIDER_TIMEOUT_SECONDS, trust_env=_volcengine_trust_env()) as client:
             # Streaming is only used for incremental prose reveal, so this path
             # is intentionally lighter than the sync JSON-first retry flow.
             async with client.stream(
