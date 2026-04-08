@@ -11,3 +11,4 @@ frontend/.env
 .npm-cache/
 .codex/
 frontend/dist/
+.private/
