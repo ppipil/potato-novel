@@ -33,6 +33,28 @@ The backend SHALL expose dedicated services for story generation, story runtime 
 - **WHEN** the system initializes runtime, advances a choice, or builds a completed run payload
 - **THEN** the orchestration SHALL be implemented behind a dedicated story runtime service boundary
 
+### Requirement: Service functions keep a single orchestration level
+The backend SHALL reduce function-level complexity during this refactor, and service or orchestration functions MUST NOT simply relocate long multi-responsibility implementations without separating clearly named sub-steps.
+
+#### Scenario: Long generation flow is decomposed
+- **WHEN** a story generation or library seed flow coordinates node selection, provider calls, content assembly, validation, and fallback handling
+- **THEN** the implementation SHALL be split into smaller named functions so the top-level orchestration function primarily describes the workflow steps
+
+#### Scenario: Mixed-responsibility function is not moved unchanged
+- **WHEN** a function simultaneously handles process control, external provider I/O, data transformation, and persistence or rollback behavior
+- **THEN** the refactor SHALL separate at least the major sub-responsibilities instead of moving the same long function body unchanged into a new module
+
+### Requirement: Story generation uses a single full-materialization path
+The backend SHALL remove the unused partial-node hydrate generation mode from the primary story package generation flow, and the two-stage generation path MUST produce fully materialized story packages for current library seed and custom story creation flows.
+
+#### Scenario: Two-stage generation materializes all nodes
+- **WHEN** the backend generates a story package through the two-stage generation flow
+- **THEN** the flow SHALL generate choices first and prose second for the full node set required by the package, rather than keeping an unused partial-hydration branch in the main path
+
+#### Scenario: Legacy partial hydrate helper is retired
+- **WHEN** a helper only exists to support default partial node hydration that is no longer used by active entry flows
+- **THEN** the refactor SHALL remove or fully isolate that helper instead of preserving it inside the primary generation orchestration
+
 ### Requirement: Repository layer abstracts session and story persistence
 The backend SHALL provide repositories for story and session persistence, and business services MUST use these repositories instead of directly manipulating storage-specific helpers.
 

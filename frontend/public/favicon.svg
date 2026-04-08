@@ -1,0 +1,14 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="64" height="64" rx="18" fill="#F7E4BF"/>
+  <path d="M20 25.5C20 16.9396 25.8203 12 32.2473 12C38.6743 12 44 16.9396 44 25.5V38.5C44 48.1649 38.1797 54 31.7527 54C25.3257 54 20 48.1649 20 38.5V25.5Z" fill="#9B5C2E"/>
+  <path d="M26.5 16.5C27.6198 13.9125 30.0399 12 32.8745 12C35.7091 12 38.1292 13.9125 39.249 16.5" stroke="#7B421D" stroke-width="2.5" stroke-linecap="round"/>
+  <ellipse cx="27" cy="28" rx="1.8" ry="2.2" fill="#7B421D"/>
+  <ellipse cx="37.5" cy="23.5" rx="1.5" ry="1.9" fill="#7B421D"/>
+  <ellipse cx="24.5" cy="37.5" rx="1.5" ry="1.9" fill="#7B421D"/>
+  <path d="M26 24C26 22.3431 27.3431 21 29 21H42C43.6569 21 45 22.3431 45 24V42C45 43.6569 43.6569 45 42 45H29C27.3431 45 26 43.6569 26 42V24Z" fill="#FFF7EA"/>
+  <path d="M31 21H42C43.6569 21 45 22.3431 45 24V42C45 43.6569 43.6569 45 42 45H31V21Z" fill="#F3E7D1"/>
+  <path d="M31 24.5C29.6667 23.5 28 23 26 23V43C28 43 29.6667 43.5 31 44.5M31 24.5C32.3333 23.5 34 23 36 23H38.5M31 24.5V44.5M31 44.5C32.3333 43.5 34 43 36 43H38.5" stroke="#7B421D" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M34.5 28H39" stroke="#C57D42" stroke-width="2" stroke-linecap="round"/>
+  <path d="M34.5 33H39" stroke="#C57D42" stroke-width="2" stroke-linecap="round"/>
+  <path d="M34.5 38H37.5" stroke="#C57D42" stroke-width="2" stroke-linecap="round"/>
+</svg>

@@ -39,7 +39,7 @@ def _build_json_story_package_instruction(extra_instruction: str = "") -> str:
         '{"id":"节点ID","kind":"turn 或 ending","turn":1,'
         '"stageLabel":"阶段标题","directorNote":"局势提示","scene":"正文","summary":"本节点摘要",'
         '"choices":[{"id":"选项ID","text":"选项文案","nextNodeId":"下个节点ID","style":"风格","tone":"语气",'
-        '"effects":{"persona":{"真诚":1},"relationship":{"好感":1}}}]}'
+        '"effects":{"persona":{"extrovert_introvert":1},"relationship":{"favor":1}}}]}'
         "]}"
         "其中 turn 节点必须正好 3 个 choices，ending 节点的 choices 必须是空数组。"
         "整个故事包固定为 3 个 ending 节点。"
@@ -249,7 +249,7 @@ def _compose_ending_analysis_prompt(opening: str, summary: str, transcript: list
         "要求："
         "title 要像互动游戏结算称号；"
         "personaTags 返回 2 到 4 个短标签；"
-        "romance 分析感情倾向；"
-        "life 分析现实人格；"
+        "romance 必须结合 relationship.favor 的高低来分析感情走向；"
+        "life 必须结合 persona 三条轴（extrovert_introvert、scheming_naive、optimistic_pessimistic）做人格分析；"
         "nextUniverseHook 像下一本推荐语。"
     )

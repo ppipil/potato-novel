@@ -433,7 +433,7 @@ async function confirmDeleteSavedStory(story) {
   }
 }
 
-async function withTimeout(requestFactory, timeoutMs = 90000, message = "进入故事超时，请稍后重试") {
+async function withTimeout(requestFactory, timeoutMs = 300000, message = "进入故事超时，请稍后重试") {
   const controller = new AbortController();
   let timedOut = false;
   const timer = setTimeout(() => {
@@ -522,8 +522,8 @@ async function handleGenerate(openingOverride = "") {
           opening: openingToUse,
           role: selectedRole.value
         }, requestOptions),
-        120000,
-        "自定义故事生成超时，请稍后重试。"
+        300000,
+        "自定义故事生成超时（当前链路可能需要数分钟），请稍后重试。"
       );
     }
     const nextSession = result.session;

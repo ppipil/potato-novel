@@ -1,67 +1,46 @@
-# Potato Novel x SecondMe OAuth Demo
+# Potato Novel
 
-这是一个最小可运行骨架：
+土豆小说是一个基于 `SecondMe OAuth + Vue 3 + FastAPI` 的互动短篇小说项目。
 
-- `frontend/`：Vue 3 前端，承接 `http://localhost:3000/api/auth/callback`
-- `backend/`：FastAPI 后端，负责发起 OAuth、校验 state、交换 token、保存 session
+它当前支持两类主要体验：
 
-## 为什么回调还能保持 `localhost:3000`
+- `library` 模式：从书城模板开局，首次访问会先生成全局 seed，后续用户基于 seed 新开一局
+- `custom` 模式：输入自定义开头，后端按固定骨架生成一局可游玩的互动故事
 
-你当前已经在 SecondMe 平台填写了：
+项目现在不再只是最初的 OAuth demo。当前后端已经在按 `routes / services / providers / repositories / domain` 分层重构，主链路已经接到新结构上，但仍有少量过渡中的兼容文件。
 
-```text
-http://localhost:3000/api/auth/callback
-```
+更详细的结构说明见：
 
-这个仓库现在兼容这条回调地址：
+- [`docs/architecture.md`](/Users/pipilu/Documents/Projects/potato-novel/docs/architecture.md)
 
-1. 浏览器先访问后端 `/api/auth/login`
-2. SecondMe 授权完成后跳回前端 `/api/auth/callback`
-3. 前端回调页读取 `code` 和 `state`
-4. 前端把它们 POST 给后端 `/api/auth/exchange`
-5. 后端用 `Client Secret` 完成 token exchange，并建立 session
+## 当前功能
 
-## 官方 OAuth 端点
+- SecondMe OAuth 登录与后端签名 session
+- 书架页与书城模板列表
+- library seed 首访播种、并发保护与复用
+- 自定义故事生成
+- 阅读页 runtime 推进与服务端会话同步
+- 故事保存、读取、删除、结局分析
+- MCP 接口与前端静态资源托管
 
-我已经从官方文档确认了以下值，可直接填入 `backend/.env`：
+## 技术栈
 
-- `SECONDME_AUTH_URL=https://go.second.me/oauth/`
-- `SECONDME_TOKEN_URL=https://api.mindverse.com/gate/lab/api/oauth/token/code`
-- `SECONDME_USERINFO_URL=https://api.mindverse.com/gate/lab/api/secondme/user/info`
-- `SECONDME_SCOPE=user.info`
+- 前端：[`frontend/`](/Users/pipilu/Documents/Projects/potato-novel/frontend)
+  Vue 3、Vue Router、Vite
+- 后端：[`backend/`](/Users/pipilu/Documents/Projects/potato-novel/backend)
+  FastAPI、Uvicorn、httpx、psycopg
 
-参考文档：
+## 目录概览
 
-- [SecondMe API Quick Start](https://develop-docs.second.me/en/docs)
-- [OAuth2 Integration Guide](https://develop-docs.second.me/en/docs/oauth2)
-
-## 分层生成实验
-
-当前故事生成正在往“结构层 / 表达层”拆分：
-
-- 后端模板控制故事骨架、状态推进和结局路由
-- SecondMe `act/stream` 负责节点选项生成
-- 火山模型负责节点正文生成
-
-本地需要额外配置这些环境变量：
-
-- `VOLCENGINE_API_KEY`
-- `VOLCENGINE_MODEL`
-- `VOLCENGINE_BASE_URL`
-- `VOLCENGINE_CHAT_PATH`，默认可用 `/chat/completions`
-
-本地测试时把这些值写进 `backend/.env`，不要把真实 key 提交进仓库。部署到 Vercel 时请改用 Vercel 环境变量注入。
-
-可以先用本地脚本单独验证正文链路：
-
-```bash
-cd /Users/pipilu/Documents/Projects/potato-novel/backend
-python3 scripts/test_volcengine_prose.py
-```
+- [`frontend/`](/Users/pipilu/Documents/Projects/potato-novel/frontend)：前端应用
+- [`backend/app/`](/Users/pipilu/Documents/Projects/potato-novel/backend/app)：后端主代码
+- [`backend/scripts/`](/Users/pipilu/Documents/Projects/potato-novel/backend/scripts)：本地调试脚本
+- [`openspec/`](/Users/pipilu/Documents/Projects/potato-novel/openspec)：OpenSpec 变更与设计文档
+- [`docs/`](/Users/pipilu/Documents/Projects/potato-novel/docs)：项目结构与架构说明
 
 ## 本地启动
 
-### 1. 后端
+### 后端
 
 ```bash
 cd /Users/pipilu/Documents/Projects/potato-novel/backend
@@ -72,7 +51,7 @@ cp .env.example .env
 uvicorn app.main:app --reload --port 8000
 ```
 
-### 2. 前端
+### 前端
 
 ```bash
 cd /Users/pipilu/Documents/Projects/potato-novel/frontend
@@ -81,23 +60,48 @@ cp .env.example .env
 npm run dev
 ```
 
-## 当前联调路径
+默认本地入口：
 
-1. 打开 `http://localhost:3000`
-2. 点击 `使用 SecondMe 登录`
-3. 完成授权
-4. 浏览器回到 `/api/auth/callback`
-5. 前端调用后端完成 token exchange
-6. 登录成功后跳转 `/bookshelf`
+- 前端：`http://localhost:3000`
+- 后端：`http://127.0.0.1:8000`
 
-## 审核材料可直接沿用
+## 关键环境变量
 
-你已经准备好的测试流程可以继续用：
+OAuth：
 
-1. 访问应用首页
-2. 点击 SecondMe 登录
-3. 登录成功后进入“土豆小说”书架
-4. 选择一本小说开头
-5. 选择角色身份
-6. 与其他 AI 分身或 NPC 一起推动剧情
-7. 生成短篇小说结果页
+- `SECONDME_CLIENT_ID`
+- `SECONDME_CLIENT_SECRET`
+- `SECONDME_AUTH_URL`
+- `SECONDME_TOKEN_URL`
+- `SECONDME_USERINFO_URL`
+- `SECONDME_SCOPE`
+- `SESSION_SECRET`
+
+故事生成：
+
+- `VOLCENGINE_API_KEY`
+- `VOLCENGINE_MODEL`
+- `VOLCENGINE_BASE_URL`
+- `VOLCENGINE_CHAT_PATH`
+
+可选存储：
+
+- `DATABASE_URL`
+
+## 当前生成链路
+
+当前自定义故事与 library seed 的主生成链路是“两阶段全量生成”：
+
+1. 先构造固定故事骨架
+2. 再为 turn 节点生成选项
+3. 最后为全部节点生成正文
+
+当前链路可能需要数分钟，前端整次等待上限已经放宽到 `5 分钟`，后端单次 provider 请求超时为 `180 秒`。
+
+## 当前状态说明
+
+- 后端 API 主路径已迁移到 `routes/ / services/ / providers/ / repositories/ / domain/`
+- [`backend/app/main.py`](/Users/pipilu/Documents/Projects/potato-novel/backend/app/main.py) 已明显瘦身，但仍保留少量兼容 wrapper 和生成主链
+- [`backend/app/model_providers.py`](/Users/pipilu/Documents/Projects/potato-novel/backend/app/model_providers.py)、[`backend/app/story_prompts.py`](/Users/pipilu/Documents/Projects/potato-novel/backend/app/story_prompts.py)、[`backend/app/story_text.py`](/Users/pipilu/Documents/Projects/potato-novel/backend/app/story_text.py) 仍是过渡中的旧文件
+
+所以当前仓库处在“新结构已落地、旧结构尚未完全收口”的重构中段，而不是最终归档状态。
