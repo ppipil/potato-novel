@@ -181,9 +181,10 @@ function abortActiveStoryRequests() {
 }
 const recommendedUniverses = computed(() => {
   const currentTitle = pageTitle.value;
-  const persona = currentState.value?.persona || {};
-  const sincerity = persona["真诚"] || 0;
-  const scheming = persona["心机"] || 0;
+  const persona = normalizePersonaState(currentState.value?.persona || {});
+  const extrovert = persona.extrovert_introvert || 0;
+  const scheming = persona.scheming_naive || 0;
+  const optimistic = persona.optimistic_pessimistic || 0;
 
   const libraryStories = readLibraryStoriesCache().rows || [];
   const preferred = libraryStories
@@ -191,13 +192,76 @@ const recommendedUniverses = computed(() => {
     .sort((left, right) => {
       const leftOpening = left?.opening || "";
       const rightOpening = right?.opening || "";
-      const leftScore = (scheming > sincerity && /怪谈|绞肉机|规则/.test(leftOpening) ? 1 : 0) + (sincerity >= scheming && /修养|攻略|婚/.test(leftOpening) ? 1 : 0);
-      const rightScore = (scheming > sincerity && /怪谈|绞肉机|规则/.test(rightOpening) ? 1 : 0) + (sincerity >= scheming && /修养|攻略|婚/.test(rightOpening) ? 1 : 0);
+      const leftScore =
+        (scheming > 0 && /怪谈|绞肉机|规则/.test(leftOpening) ? 1 : 0) +
+        (optimistic + extrovert >= 0 && /修养|攻略|婚/.test(leftOpening) ? 1 : 0);
+      const rightScore =
+        (scheming > 0 && /怪谈|绞肉机|规则/.test(rightOpening) ? 1 : 0) +
+        (optimistic + extrovert >= 0 && /修养|攻略|婚/.test(rightOpening) ? 1 : 0);
       return rightScore - leftScore;
     });
 
   return preferred.slice(0, 2);
 });
+
+function toNumber(value, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function clamp(value, minValue, maxValue) {
+  return Math.min(maxValue, Math.max(minValue, value));
+}
+
+function normalizeRelationshipState(relationship = {}) {
+  const legacyFavor =
+    toNumber(relationship?.["好感"], 0) +
+    toNumber(relationship?.["信任"], 0) -
+    toNumber(relationship?.["警惕"], 0);
+  return {
+    favor: toNumber(relationship?.favor, legacyFavor)
+  };
+}
+
+function normalizePersonaState(persona = {}) {
+  const legacySincerity = toNumber(persona?.["真诚"], 0);
+  const legacyBlunt = toNumber(persona?.["嘴硬"], 0);
+  const legacyScheming = toNumber(persona?.["心机"], 0);
+  const legacyCourage = toNumber(persona?.["胆量"], 0);
+  return {
+    extrovert_introvert: toNumber(persona?.extrovert_introvert, legacyCourage - legacyBlunt),
+    scheming_naive: toNumber(persona?.scheming_naive, legacyScheming),
+    optimistic_pessimistic: toNumber(persona?.optimistic_pessimistic, legacySincerity - legacyBlunt)
+  };
+}
+
+function normalizeChoiceEffects(effects = {}) {
+  const relationshipEffects = effects?.relationship || {};
+  const personaEffects = effects?.persona || {};
+  const favorDelta = relationshipEffects.favor !== undefined
+    ? toNumber(relationshipEffects.favor, 0)
+    : toNumber(relationshipEffects?.["好感"], 0) +
+      toNumber(relationshipEffects?.["信任"], 0) -
+      toNumber(relationshipEffects?.["警惕"], 0);
+  return {
+    relationship: {
+      favor: favorDelta
+    },
+    persona: {
+      extrovert_introvert:
+        toNumber(personaEffects.extrovert_introvert, 0) +
+        toNumber(personaEffects?.["胆量"], 0) -
+        toNumber(personaEffects?.["嘴硬"], 0),
+      scheming_naive:
+        toNumber(personaEffects.scheming_naive, 0) +
+        toNumber(personaEffects?.["心机"], 0),
+      optimistic_pessimistic:
+        toNumber(personaEffects.optimistic_pessimistic, 0) +
+        toNumber(personaEffects?.["真诚"], 0) -
+        toNumber(personaEffects?.["嘴硬"], 0)
+    }
+  };
+}
 
 onMounted(async () => {
   const pioneerFromQuery = typeof route.query.pioneer === "string" && route.query.pioneer === "1";
@@ -326,6 +390,9 @@ function isLibrarySessionCacheUsable(cachedEntry, seedUpdatedAt) {
 }
 
 function applyChoiceEffects(previousState, choice, nextNode, nextPathLength) {
+  const normalizedRelationship = normalizeRelationshipState(previousState?.relationship || {});
+  const normalizedPersona = normalizePersonaState(previousState?.persona || {});
+  const normalizedEffects = normalizeChoiceEffects(choice?.effects || {});
   const nextState = {
     stage: nextNode?.kind === "ending"
       ? "ending"
@@ -335,18 +402,23 @@ function applyChoiceEffects(previousState, choice, nextNode, nextPathLength) {
           ? "climax"
           : "conflict",
     flags: [...(previousState?.flags || [])],
-    relationship: { ...(previousState?.relationship || {}) },
-    persona: { ...(previousState?.persona || {}) },
+    relationship: normalizedRelationship,
+    persona: normalizedPersona,
     turn: Number(nextNode?.turn || nextPathLength || 1),
     endingHint: ""
   };
 
-  Object.entries(choice?.effects?.persona || {}).forEach(([key, value]) => {
+  Object.entries(normalizedEffects?.persona || {}).forEach(([key, value]) => {
     nextState.persona[key] = (nextState.persona[key] || 0) + Number(value || 0);
   });
-  Object.entries(choice?.effects?.relationship || {}).forEach(([key, value]) => {
+  Object.entries(normalizedEffects?.relationship || {}).forEach(([key, value]) => {
     nextState.relationship[key] = (nextState.relationship[key] || 0) + Number(value || 0);
   });
+
+  nextState.relationship.favor = clamp(nextState.relationship.favor || 0, -5, 5);
+  nextState.persona.extrovert_introvert = clamp(nextState.persona.extrovert_introvert || 0, -5, 5);
+  nextState.persona.scheming_naive = clamp(nextState.persona.scheming_naive || 0, -5, 5);
+  nextState.persona.optimistic_pessimistic = clamp(nextState.persona.optimistic_pessimistic || 0, -5, 5);
 
   const style = choice?.style || "";
   if (["trust", "support", "soft"].includes(style) && !nextState.flags.includes("soft_route")) {
@@ -359,11 +431,44 @@ function applyChoiceEffects(previousState, choice, nextNode, nextPathLength) {
     nextState.flags.push("hidden_route");
   }
   if (nextNode?.kind === "ending") {
-    nextState.endingHint = (nextState.relationship["好感"] || 0) >= 2
-      ? "你把这个宇宙推向了高好感收束。"
-      : "这个宇宙留下了更克制也更耐回味的尾音。";
+    if ((nextState.relationship.favor || 0) >= 2) {
+      nextState.endingHint = "你把这个宇宙推向了高好感收束。";
+    } else if ((nextState.persona.scheming_naive || 0) >= 2) {
+      nextState.endingHint = "你用偏心机的策略推进了关系，结局会带一点反转后劲。";
+    } else {
+      nextState.endingHint = "这个宇宙留下了更克制也更耐回味的尾音。";
+    }
   }
   return nextState;
+}
+
+function resolveInfluencedEndingNode(targetNode, projectedState) {
+  if (!targetNode || targetNode.kind !== "ending") {
+    return targetNode;
+  }
+  const endings = (packageData.value?.nodes || []).filter((item) => item?.kind === "ending");
+  if (!endings.length) {
+    return targetNode;
+  }
+
+  const favor = toNumber(projectedState?.relationship?.favor, 0);
+  const extrovert = toNumber(projectedState?.persona?.extrovert_introvert, 0);
+  const scheming = toNumber(projectedState?.persona?.scheming_naive, 0);
+  const optimistic = toNumber(projectedState?.persona?.optimistic_pessimistic, 0);
+
+  let preferredEndingType = "bittersweet";
+  if (favor >= 2 && optimistic >= 0 && scheming <= 1) {
+    preferredEndingType = "good";
+  } else if (favor <= -1 || optimistic <= -2) {
+    preferredEndingType = "open";
+  } else if (scheming >= 2 || extrovert <= -1) {
+    preferredEndingType = "bittersweet";
+  } else if (favor >= 1) {
+    preferredEndingType = "good";
+  }
+
+  const preferredEndingNode = endings.find((item) => item?.endingType === preferredEndingType);
+  return preferredEndingNode || targetNode;
 }
 
 function playPageTurnSound() {
@@ -557,19 +662,22 @@ async function chooseOption(choice) {
   error.value = "";
   saveMessage.value = "";
   try {
-    const nextNode = nodeMap.value[choice.nextNodeId];
-    if (!nextNode) {
+    const targetNode = nodeMap.value[choice.nextNodeId];
+    if (!targetNode) {
       throw new Error("下一剧情节点不存在");
     }
     playPageTurnSound();
     const previousState = runtime.value?.state || packageData.value?.initialState || {};
+    const projectedState = applyChoiceEffects(previousState, choice, targetNode, (runtime.value?.path?.length || 0) + 1);
+    const nextNode = resolveInfluencedEndingNode(targetNode, projectedState);
     const nextPath = [
       ...(runtime.value?.path || []),
       {
         fromNodeId: currentNode.value.id,
         choiceId: choice.id,
         choiceText: choice.text,
-        nextNodeId: choice.nextNodeId,
+        nextNodeId: nextNode.id,
+        selectedNextNodeId: choice.nextNodeId,
         turn: currentNode.value.turn,
         effects: choice.effects || {}
       }
