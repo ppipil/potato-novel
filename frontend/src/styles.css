@@ -162,7 +162,7 @@ button {
   }
 
   .story-prose {
-    @apply whitespace-pre-wrap font-serif text-[17px] leading-[2.2] text-paper-900;
+    @apply whitespace-pre-wrap font-serif text-[16px] leading-[2.02] text-paper-900;
     text-indent: 2em;
   }
 

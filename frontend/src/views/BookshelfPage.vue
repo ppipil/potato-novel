@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import LoadingOverlay from "../components/LoadingOverlay.vue";
 import {
@@ -23,6 +23,8 @@ const customOpening = ref("");
 const selectedRole = ref("主人公");
 const stories = ref([]);
 const generating = ref(false);
+const generatingLabel = ref("");
+const generatingElapsedSec = ref(0);
 const bootstrapping = ref(true);
 const error = ref("");
 const tipMessage = ref("");
@@ -35,9 +37,12 @@ const pressedStoryId = ref("");
 const suppressClickStoryId = ref("");
 const CACHE_STORAGE_KEY = "potato-novel-cache-states";
 const CACHE_DEBUG_KEY = "potato-novel-debug-cache-states";
+const BACKGROUND_READY_KEY = "potato-novel-background-ready-session";
 const LIBRARY_STORIES_CACHE_TTL_MS = 5 * 60 * 1000;
 const STORY_DELETE_LONG_PRESS_MS = 600;
 let storyDeleteTimer = 0;
+let generatingTicker = 0;
+let bookshelfMounted = true;
 
 const templateTags = ["悬疑惊悚", "都市言情", "无限流", "命运反转"];
 const coverTints = [
@@ -193,6 +198,19 @@ function isLibrarySessionCacheUsable(cachedEntry, seedUpdatedAt) {
 }
 
 onMounted(async () => {
+  bookshelfMounted = true;
+  try {
+    const readyRaw = sessionStorage.getItem(BACKGROUND_READY_KEY);
+    if (readyRaw) {
+      const readyPayload = JSON.parse(readyRaw);
+      if (readyPayload?.session?.id) {
+        tipMessage.value = readyPayload.message || "你离开页面时那局已经准备好了，点这里继续。";
+        preloadedSession.value = readyPayload.session;
+      }
+    }
+  } catch {
+    // ignore malformed background-ready payload
+  }
   console.info("[potato-bookshelf] mounted");
   if (!customOpening.value) {
     activeSeed.value = freeCreationSeeds[Math.floor(Math.random() * freeCreationSeeds.length)];
@@ -247,6 +265,11 @@ onMounted(async () => {
       bootstrapping.value = false;
     }
   }
+});
+
+onUnmounted(() => {
+  bookshelfMounted = false;
+  stopGeneratingTicker();
 });
 
 async function refreshStories(userId = user.value?.userId || "") {
@@ -453,6 +476,35 @@ async function withTimeout(requestFactory, timeoutMs = 300000, message = "进入
   }
 }
 
+function startGeneratingTicker() {
+  stopGeneratingTicker();
+  generatingElapsedSec.value = 0;
+  generatingTicker = window.setInterval(() => {
+    generatingElapsedSec.value += 1;
+  }, 1000);
+}
+
+function stopGeneratingTicker() {
+  if (generatingTicker) {
+    window.clearInterval(generatingTicker);
+    generatingTicker = 0;
+  }
+}
+
+function normalizeGenerationError(err) {
+  const message = err instanceof Error ? err.message : String(err || "");
+  if (!message) {
+    return "进入故事失败，请稍后重试。";
+  }
+  if (message.includes("Failed to fetch") || message.includes("NetworkError") || message.includes("网络")) {
+    return "网络连接不稳定，故事暂时没连上。请检查网络后重试。";
+  }
+  if (message.includes("超时")) {
+    return `${message} 你可以先浏览书架，稍后再试。`;
+  }
+  return message;
+}
+
 async function handleGenerate(openingOverride = "") {
   const normalizedOpening =
     typeof openingOverride === "string"
@@ -472,9 +524,14 @@ async function handleGenerate(openingOverride = "") {
   generating.value = true;
   error.value = "";
   tipMessage.value = "";
+    generatingLabel.value = "正在准备故事...";
   try {
     const isPresetOpening = Boolean(libraryStoryIdByOpening(openingToUse));
     const entryMode = isPresetOpening ? "library" : "custom";
+    startGeneratingTicker();
+    generatingLabel.value = entryMode === "custom"
+      ? "正在生成自定义剧情（可能需要几分钟）"
+      : "正在准备模板剧情";
     let result;
     if (isPresetOpening) {
       const storyId = libraryStoryIdByOpening(openingToUse);
@@ -492,7 +549,7 @@ async function handleGenerate(openingOverride = "") {
           seedResult = await withTimeout(
             (requestOptions) => generateLibraryStorySeed(storyId, {}, requestOptions),
             480000,
-            "首次播种正在生成完整故事包（可能需要 1-8 分钟），请稍后重试。"
+            "首次播种正在生成完整故事包（可能需要 1-8 分钟），当前请求超时。"
           );
         }
         result = await withTimeout(
@@ -523,10 +580,21 @@ async function handleGenerate(openingOverride = "") {
           role: selectedRole.value
         }, requestOptions),
         300000,
-        "自定义故事生成超时（当前链路可能需要数分钟），请稍后重试。"
+        "自定义故事生成超时（当前链路可能需要数分钟）。"
       );
     }
     const nextSession = result.session;
+    // 先落地结果，避免页面卸载导致成功结果丢失
+    sessionStorage.setItem("potato-novel-story-session", JSON.stringify(nextSession));
+    setTransferredStorySession(nextSession);
+
+    const backgroundReadyPayload = {
+      session: nextSession,
+      message: "你离开页面时那局已经准备好了，点这里继续。"
+    };
+    sessionStorage.setItem(BACKGROUND_READY_KEY, JSON.stringify(backgroundReadyPayload));
+    preloadedSession.value = nextSession;
+
     logStoryGenerationDebug(nextSession, isPresetOpening ? "bookshelf-start-library-session" : "bookshelf-generate-custom-session");
     if (result?.pioneer) {
       const pioneerMessage = result?.pioneerMessage || "你是这颗土豆宇宙的播种者，首次生成会稍慢。";
@@ -557,8 +625,11 @@ async function handleGenerate(openingOverride = "") {
         phase: "已完成"
       });
     }
-    sessionStorage.setItem("potato-novel-story-session", JSON.stringify(nextSession));
-    setTransferredStorySession(nextSession);
+    if (!bookshelfMounted) {
+      return;
+    }
+    sessionStorage.removeItem(BACKGROUND_READY_KEY);
+    preloadedSession.value = null;
     router.push({
       path: "/story/result",
       query: {
@@ -567,18 +638,38 @@ async function handleGenerate(openingOverride = "") {
       }
     });
   } catch (err) {
-    error.value = err instanceof Error ? err.message : "进入故事失败";
+    error.value = normalizeGenerationError(err);
   } finally {
     generating.value = false;
+    generatingLabel.value = "";
+    stopGeneratingTicker();
   }
 }
 
 function handleCustomInput() {
   openingMode.value = "custom";
-  preloadedSession.value = null;
   if (!activeSeed.value && freeCreationSeeds.includes(customOpening.value)) {
     activeSeed.value = customOpening.value;
   }
+}
+
+function continueBackgroundReadySession() {
+  if (!preloadedSession.value?.id) {
+    return;
+  }
+  const nextSession = preloadedSession.value;
+  sessionStorage.setItem("potato-novel-story-session", JSON.stringify(nextSession));
+  setTransferredStorySession(nextSession);
+  sessionStorage.removeItem(BACKGROUND_READY_KEY);
+  preloadedSession.value = null;
+  tipMessage.value = "";
+  router.push({
+    path: "/story/result",
+    query: {
+      entry: "custom",
+      pioneer: "0"
+    }
+  });
 }
 
 function formatBookCoverTitle(opening) {
@@ -599,16 +690,16 @@ function formatBookCoverTitle(opening) {
   <main class="paper-shell">
     <section class="paper-page">
       <LoadingOverlay
-        :visible="bootstrapping || generating"
-        :title="bootstrapping ? '正在整理你的书架' : openingMode === 'custom' ? '正在写下第一幕' : '正在翻开故事'"
-        :description="bootstrapping ? '优先读取本地缓存，并和云端故事记录做一次同步。' : openingMode === 'custom' ? '土豆正在把你的开头整理成故事的第一页。' : '如果模板已经准备好，这次会直接带你进入那个宇宙。'"
+        :visible="bootstrapping"
+        :title="'正在整理你的书架'"
+        :description="'优先读取本地缓存，并和云端故事记录做一次同步。'"
       />
 
-      <header class="sticky top-0 z-20 -mx-6 mb-8 bg-paper-50/92 px-6 pb-5 pt-2 backdrop-blur-sm sm:-mx-8 sm:px-8">
+      <header class="sticky top-0 z-20 -mx-6 mb-8 border-b border-paper-200/60 bg-paper-50/92 px-6 pb-4 pt-2 backdrop-blur-xl sm:-mx-8 sm:px-8">
         <div class="flex items-center justify-between gap-4">
           <div class="space-y-2">
             <p class="text-sm uppercase tracking-[0.24em] text-paper-700/55">Welcome Back</p>
-            <h1 class="font-serif text-[2.6rem] font-semibold text-paper-900">
+            <h1 class="font-serif text-[2.2rem] font-semibold text-paper-900">
               嗨，{{ user?.name || user?.nickname || "创作者_77X" }}
             </h1>
           </div>
@@ -621,7 +712,7 @@ function formatBookCoverTitle(opening) {
         </div>
       </header>
 
-      <section class="space-y-12 pb-10">
+      <section class="space-y-10 pb-10">
         <div class="space-y-5">
           <div class="flex items-end justify-between">
             <h2 class="section-title">我的宇宙</h2>
@@ -667,19 +758,27 @@ function formatBookCoverTitle(opening) {
         </div>
 
         <div class="space-y-4">
-          <h2 class="font-serif text-[2.3rem] font-semibold text-paper-900">开启新篇章</h2>
+          <h2 class="font-serif text-[2rem] font-semibold text-paper-900">开启新篇章</h2>
 
-          <article class="paper-card relative overflow-hidden px-6 py-7">
+          <p
+            v-if="generating"
+            class="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700"
+          >
+            {{ generatingLabel }} · 已等待 {{ generatingElapsedSec }}s
+            <span class="text-amber-700/75">（可继续浏览书架，完成后会自动进入）</span>
+          </p>
+
+          <article class="paper-card relative overflow-hidden px-5 py-5">
             <div class="absolute right-6 top-6 h-16 w-16 rounded-full bg-accent-400/20 blur-2xl"></div>
-            <div class="space-y-6">
+            <div class="space-y-5">
               <div class="flex items-center gap-3 text-accent-500">
-                <span class="text-3xl">✎</span>
-                <h3 class="text-[1.85rem] font-semibold">自由创作</h3>
+                <span class="text-2xl">✎</span>
+                <h3 class="text-[1.55rem] font-semibold">自由创作</h3>
               </div>
 
               <textarea
                 v-model="customOpening"
-                class="shadow-inner-soft min-h-40 w-full resize-none rounded-[28px] border border-paper-100 bg-paper-50 px-6 py-6 font-serif text-[1.05rem] leading-9 placeholder:text-paper-700/28"
+                class="shadow-inner-soft min-h-32 w-full resize-none rounded-[24px] border border-paper-100 bg-paper-50 px-5 py-4 font-serif text-[1rem] leading-8 placeholder:text-paper-700/28"
                 :class="customOpening === activeSeed ? 'text-paper-700/42' : 'text-paper-900'"
                 placeholder="描述你的故事开局和你的身份..."
                 @focus="openingMode = 'custom'"
@@ -695,7 +794,7 @@ function formatBookCoverTitle(opening) {
                 </p>
 
                 <button
-                  class="active-press rounded-[18px] bg-stone-400 px-6 py-4 text-2xl font-semibold text-white disabled:opacity-60"
+                  class="active-press rounded-[16px] bg-stone-400 px-5 py-3 text-xl font-semibold text-white disabled:opacity-60"
                   :disabled="generating"
                   @click="handleGenerate"
                 >
@@ -705,24 +804,24 @@ function formatBookCoverTitle(opening) {
             </div>
           </article>
 
-          <div class="space-y-5 pt-2">
+          <div class="space-y-4 pt-2">
             <button
               v-for="(libraryStory, index) in libraryStoryRows"
               :key="libraryStory.id"
-              class="paper-card active-press grid grid-cols-[1fr_10rem] overflow-hidden text-left"
+              class="paper-card active-press grid grid-cols-[1fr_8.5rem] overflow-hidden text-left"
               :disabled="generating"
               @click="handleGenerate(libraryStory.opening)"
             >
-              <div class="space-y-4 px-6 py-6">
+              <div class="space-y-3 px-5 py-4">
                 <div class="flex items-center gap-3">
-                  <span class="inline-flex rounded-xl bg-paper-100 px-4 py-2 text-sm font-semibold text-paper-800">
+                  <span class="inline-flex rounded-xl bg-paper-100 px-3 py-1.5 text-xs font-semibold text-paper-800">
                     {{ templateTags[index % templateTags.length] }}
                   </span>
                 </div>
-                <h3 class="font-serif text-[2rem] font-semibold leading-tight text-paper-900">
+                <h3 class="font-serif text-[1.55rem] font-semibold leading-tight text-paper-900">
                   {{ libraryStory.title }}
                 </h3>
-                <p class="line-clamp-2 text-[1rem] leading-8 text-paper-700">
+                <p class="line-clamp-2 text-[0.92rem] leading-6 text-paper-700">
                   {{ libraryStory.summary }}
                 </p>
               </div>
@@ -754,7 +853,14 @@ function formatBookCoverTitle(opening) {
           <p v-if="selectedOpening && openingMode === 'preset'" class="rounded-2xl bg-paper-100/80 px-4 py-3 text-sm text-paper-800">
             模板卡片点一下就会进入；未播种会首访生成，已播种会直接复用数据库故事包。
           </p>
-          <p v-if="tipMessage" class="rounded-2xl bg-amber-50 px-4 py-3 text-sm text-amber-700">{{ tipMessage }}</p>
+          <button
+            v-if="tipMessage && preloadedSession?.id"
+            class="active-press w-full rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-left text-sm text-amber-700"
+            @click="continueBackgroundReadySession"
+          >
+            {{ tipMessage }}
+          </button>
+          <p v-else-if="tipMessage" class="rounded-2xl bg-amber-50 px-4 py-3 text-sm text-amber-700">{{ tipMessage }}</p>
           <p v-if="error" class="rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700">{{ error }}</p>
         </div>
       </section>

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 
@@ -62,15 +63,26 @@ def create_sessions_router(deps: SimpleNamespace) -> APIRouter:
         deps.require_env()
         server_session = deps.get_server_session(request)
         body = await request.json()
+        started_at = time.time()
 
         session_id = body.get("sessionId", "").strip()
         story = body.get("story", "")
         meta = body.get("meta", {}) or {}
+        trace_id = str(meta.get("traceId") or f"ending-{int(started_at * 1000)}")
+        transcript_size = len(meta.get("transcript", []) or [])
+        print(
+            f"[ending-analysis] start trace={trace_id} session={session_id or 'none'} transcript={transcript_size}",
+            flush=True,
+        )
         analysis_context = deps.build_ending_analysis_context(
             session_id=session_id,
             story=story,
             meta=meta,
             user_id=server_session["user"].get("userId"),
+        )
+        print(
+            f"[ending-analysis] context trace={trace_id} opening_len={len(str(analysis_context.get('opening', '')))} summary_len={len(str(analysis_context.get('summary', '')))} transcript={len(analysis_context.get('transcript', []) or [])}",
+            flush=True,
         )
 
         prompt = deps.compose_ending_analysis_prompt(
@@ -79,9 +91,22 @@ def create_sessions_router(deps: SimpleNamespace) -> APIRouter:
             transcript=analysis_context["transcript"],
             state=analysis_context["state"],
         )
-        analysis = deps.normalize_ending_analysis(
-            await deps.call_secondme_chat(server_session["token"]["access_token"], prompt)
-        )
+        try:
+            raw_analysis = await deps.call_secondme_chat(server_session["token"]["access_token"], prompt)
+            print(
+                f"[ending-analysis] provider-return trace={trace_id} raw_len={len(str(raw_analysis or ''))}",
+                flush=True,
+            )
+            analysis = deps.normalize_ending_analysis(raw_analysis)
+        except Exception as exc:
+            elapsed_ms = int((time.time() - started_at) * 1000)
+            print(
+                f"[ending-analysis] failed trace={trace_id} elapsed_ms={elapsed_ms} error={repr(exc)}",
+                flush=True,
+            )
+            raise
+        elapsed_ms = int((time.time() - started_at) * 1000)
+        print(f"[ending-analysis] done trace={trace_id} elapsed_ms={elapsed_ms}", flush=True)
         return JSONResponse({"ok": True, "analysis": analysis})
 
     @router.post("/api/story/generate")

@@ -48,13 +48,13 @@ def _build_json_story_package_instruction(extra_instruction: str = "") -> str:
         "每个 turn 节点都必须能通过 choices 走到某个 ending 节点。"
         "每个 choice 的 nextNodeId 必须指向同一故事包中的合法节点，不能留空，不能引用不存在的节点。"
         "每个 choice 都要写出明确的人设或好感影响，effects 里的数值只能用整数。"
-        "正文 scene 必须是 2 段中文互动小说文本，风格更像橙光/互动小说，而不是聊天回复。"
+        "正文 scene 必须是 2 到 4 段中文互动小说文本，风格更像橙光/互动小说，而不是聊天回复。"
         "三个 choices 必须明显不同，不能只是同义改写。"
         "至少 2 个 choices 要有明确对白或人物动作，不要写成抽象标签。"
         "正文 scene 和 choices.text 中禁止使用英文双引号 \"，因为这会破坏 JSON。"
         "如果需要对白，一律使用中文直角引号「」或自然叙述，不要使用英文双引号。"
         "正文和选项里都不要出现 ```、JSON、注释、解释文字。"
-        "单个 scene 固定为 2 段，单个 choice 控制在 40 个中文字符以内。"
+        "单个 scene 写成 2 到 4 段，单个 choice 控制在 40 个中文字符以内。"
         "不要输出任何 null，不要省略必填字段。"
         f"{extra}"
     )
@@ -68,11 +68,11 @@ def _build_json_story_node_instruction(extra_instruction: str = "") -> str:
         "你正在补全互动小说某一个节点的正文内容。"
         "必须返回严格 JSON，不要使用 Markdown，不要使用代码块，不要添加 JSON 之外的任何文字。\n"
         "JSON 结构必须为："
-        '{"stageLabel":"阶段标题","directorNote":"一句局势提示","scene":"2段正文","summary":"一句本节点摘要"}'
+        '{"stageLabel":"阶段标题","directorNote":"一句局势提示","scene":"2到4段正文","summary":"一句本节点摘要"}'
         "scene 必须是中文互动小说文本。"
         "禁止使用英文双引号 \"，如果出现对白，只能使用中文直角引号「」。"
         "不要输出 choices，不要输出 nodes，不要解释结构。"
-        "summary 和 directorNote 要短，scene 必须固定写成 2 段，并且围绕已给定的分支走向。"
+        "summary 和 directorNote 要短，scene 必须写成 2 到 4 段，并且围绕已给定的分支走向。"
         "正文要更像有戏的互动小说场景，优先使用对白、动作、误会、反应和情绪落点。"
         "不要平铺直叙地总结剧情，不要新增骨架之外的新主线。"
         f"{extra}"
@@ -92,6 +92,9 @@ def _build_json_story_choice_instruction(extra_instruction: str = "") -> str:
         "每个 text 都必须是生活化、人物化、能直接点选的选项文案。"
         "至少 2 个选项要带对白或明确动作，不要只写抽象标签。"
         "三个选项必须明显不同，要有 drama 或搞笑互动感。"
+        "每个选项都必须和当前节点上下文强绑定，至少引用一个当前节点里的具体信息（人物状态、冲突点、道具、地点、刚发生的动作）。"
+        "不强制字数，但禁止三条都写成几乎同长度、同句式的改写版本。"
+        "禁止三条都使用同一种句式开头。"
         "不要生成新的剧情结构，不要改写 nextNodeId，不要解释策略。"
         f"{extra}"
     )
@@ -168,12 +171,14 @@ def _compose_story_choice_prompt(
         f"当前节点：{node.get('id')} ({node.get('kind')})\n"
         f"当前节点阶段：{node.get('stageLabel')}\n"
         f"当前节点剧情功能：{node.get('beat', node.get('summary', ''))}\n"
+        f"当前节点路径摘要：{node.get('pathSummary', '')}\n"
         f"当前节点局势提示：{node.get('directorNote', '')}\n"
         f"当前节点摘要：{node.get('summary', '')}\n"
         f"本节点必须输出的三类策略：\n{strategy_digest}\n"
         f"完整骨架：\n{skeleton_digest}\n"
         "请只生成当前节点的 3 个选项文案，并按给定策略顺序返回。"
         "每个选项都要像一句真正会说出口的话或一个真正会做的动作。"
+        "上下文绑定优先依据：阶段、剧情功能、路径摘要、局势提示、节点摘要。"
         "不要把三个选项写成同义改写。"
     )
 
@@ -204,11 +209,11 @@ def _compose_story_node_prompt(
     ) or "- 本节点为 ending，无 choices"
     ending_instruction = (
         "这是结局节点。scene 不要只写一句收尾摘要，而要写成一个真正的结局场景。"
-        "请固定写 2 段，优先使用人物对白、动作和情绪反应来完成收束。"
+        "请写 3 到 4 段，优先使用人物对白、动作和情绪反应来完成收束。"
         "至少包含：最后一次对峙或确认、情绪落点、结局余波。"
         "读感要像橙光结局页前的正式收尾，不要像系统结算文案。"
     ) if node.get("kind") == "ending" else (
-        "这是普通回合节点。scene 固定写 2 段，重点放在当前冲突推进和情绪张力上。"
+        "这是普通回合节点。scene 写 2 到 3 段，重点放在当前冲突推进和情绪张力上。"
     )
     return (
         f"{_build_json_story_node_instruction(repair_hint)}\n\n"
@@ -238,6 +243,7 @@ def _compose_ending_analysis_prompt(opening: str, summary: str, transcript: list
     return (
         "你是一名擅长中文互动小说、恋爱测试和角色洞察的分析型写手。"
         "请根据用户在一局故事里的具体选择，输出一段有趣、轻巧、像互动游戏结算页一样的分析。"
+        "整体语气要更像一段尾声旁白，而不是人格测评报告。"
         "不要讲大道理，不要空泛总结，要结合具体选择风格来判断。\n"
         "必须返回严格 JSON，不要使用 Markdown，不要使用代码块，不要添加 JSON 之外的任何文字。\n"
         "JSON 结构必须为："
@@ -247,9 +253,9 @@ def _compose_ending_analysis_prompt(opening: str, summary: str, transcript: list
         f"玩家实际选择：\n{action_lines or '- 暂无'}\n"
         f"故事状态：{json.dumps(state or {}, ensure_ascii=False)}\n\n"
         "要求："
-        "title 要像互动游戏结算称号；"
-        "personaTags 返回 2 到 4 个短标签；"
-        "romance 必须结合 relationship.favor 的高低来分析感情走向；"
-        "life 必须结合 persona 三条轴（extrovert_introvert、scheming_naive、optimistic_pessimistic）做人格分析；"
+        "title 要像互动游戏结算称号，但不要太像心理测试术语；"
+        "personaTags 返回 1 到 2 个短标签即可，点到为止，不要堆属性词；"
+        "romance 重点写这段关系在剧情中的情绪走向和余味，不要出现数值或维度术语；"
+        "life 重点写这次选择反映出的处事风格，用叙事语言，不要直接罗列人格轴；"
         "nextUniverseHook 像下一本推荐语。"
     )

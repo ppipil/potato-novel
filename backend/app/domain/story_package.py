@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Callable, Optional
 
 
@@ -135,10 +136,12 @@ def normalize_choice_effect_payload(payload: Any, fallback_style: str, clean_mod
 
 def fallback_choice_by_index(index: int, scene: str) -> str:
     """按位置返回一个兜底选项文案。"""
+    normalized_scene = re.sub(r"\s+", "", str(scene or ""))
+    scene_hint = normalized_scene[:10] if normalized_scene else "眼前这局面"
     fallbacks = [
-        "我低声开口：“你先别躲，我想听你亲口说。”",
-        "我故意弯起眼睛笑了笑：“如果你想试探我，那我也不介意陪你玩到底。”",
-        "我没有马上接话，只是顺着他的动作慢慢逼近一步，想看他会不会先失态。",
+        f"我压低声音看着{scene_hint}：「你先别躲，把话说清楚。」",
+        f"我弯起眼睛试探他：「都到{scene_hint}这一步了，你还想让我装没看见？」",
+        f"我没有立刻接话，只盯着{scene_hint}往前半步，逼他先把底牌亮出来。",
     ]
     if 0 <= index < len(fallbacks):
         return fallbacks[index]

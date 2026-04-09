@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import LoadingOverlay from "../components/LoadingOverlay.vue";
 import {
@@ -29,6 +29,9 @@ const currentIndex = ref(-1);
 const endingAnalysis = ref(null);
 const analyzingEnding = ref(false);
 const optimisticSavedStoryId = ref("");
+const storyScrollContainer = ref(null);
+const storyBottomAnchor = ref(null);
+const choiceDock = ref(null);
 let choiceAudioContext = null;
 const activeRequestControllers = new Set();
 const currentUserId = computed(() => {
@@ -50,7 +53,12 @@ const currentNode = computed(() => {
 const currentNodeLoaded = computed(() => Boolean(currentNode.value?.loaded !== false && currentNode.value?.scene));
 
 function cleanDisplayText(text) {
-  let value = String(text || "").trim();
+  let value = String(text || "")
+    .replace(/\\r\\n/g, "\n")
+    .replace(/\\n/g, "\n")
+    .replace(/\\r/g, "")
+    .replace(/\\t/g, "\t")
+    .trim();
   while (true) {
     let updated = value;
     for (const prefix of ['", "', '","', "', '", ",'", "',", '["', "['", '",', "',"]) {
@@ -95,6 +103,7 @@ const canSave = computed(() => isSessionComplete.value && !syncingSave.value);
 const canRequestEndingAnalysis = computed(() =>
   Boolean(session.value?.id) && isSessionComplete.value && isRevealComplete.value && !endingAnalysis.value && !analyzingEnding.value
 );
+const endingTags = computed(() => (endingAnalysis.value?.personaTags || []).slice(0, 2));
 const currentState = computed(() => runtime.value?.state || packageData.value?.initialState || {});
 const pageTitle = computed(() => packageData.value?.title || "互动故事");
 const openingLead = computed(() => session.value?.meta?.opening || "");
@@ -108,8 +117,19 @@ const choiceList = computed(() => {
 });
 const historyEntries = computed(() => {
   const entries = runtime.value?.entries || [];
-  const tailLength = currentNode.value?.directorNote ? 2 : 1;
-  return entries.slice(0, Math.max(entries.length - tailLength, 0));
+  const clipped = entries.slice(0, Math.max(entries.length - 1, 0));
+  const currentTurn = Number(currentNode.value?.turn || -1);
+  return clipped.filter((item) => {
+    const label = String(item?.label || "");
+    if (label.includes("局势提示")) {
+      return false;
+    }
+    // 兼容旧会话里把当前回合内容提前写进 history 的情况
+    if (Number(item?.turn || -999) === currentTurn) {
+      return false;
+    }
+    return true;
+  });
 });
 const renderedHistory = computed(() =>
   historyEntries.value.map((item, index) => ({
@@ -131,6 +151,7 @@ const overlayDescription = computed(() => {
   }
   return "请稍候。";
 });
+const ENDING_ANALYSIS_TIMEOUT_MS = 45000;
 
 function logStoryGenerationDebug(sessionPayload, source) {
   const debug = sessionPayload?.package?.debug;
@@ -319,6 +340,40 @@ onUnmounted(() => {
   abortActiveStoryRequests();
 });
 
+watch(
+  () => runtime.value?.currentNodeId,
+  () => {
+    if (!loading.value) {
+      scrollStoryToBottom("smooth");
+    }
+  }
+);
+
+watch(
+  () => choiceList.value.length,
+  () => {
+    if (!loading.value && choiceList.value.length > 0) {
+      scrollStoryToBottom("smooth");
+    }
+  }
+);
+
+watch(
+  () => isRevealComplete.value,
+  (complete) => {
+    if (!complete || loading.value || isSessionComplete.value || !currentNodeLoaded.value) {
+      return;
+    }
+    // 选项区真正可见时再补一次滚动，避免只在 choiceList 变化时触发过早
+    scrollStoryToBottom("smooth");
+    void nextTick(() => {
+      if (choiceDock.value && typeof choiceDock.value.scrollIntoView === "function") {
+        choiceDock.value.scrollIntoView({ behavior: "smooth", block: "end" });
+      }
+    });
+  }
+);
+
 function goBack() {
   abortActiveStoryRequests();
   analyzingEnding.value = false;
@@ -334,10 +389,7 @@ function buildNodeEntries(node) {
   if (!node) {
     return [];
   }
-  return [
-    { turn: node.turn, label: node.stageLabel, text: node.scene },
-    ...(node.directorNote ? [{ turn: node.turn, label: "局势提示", text: node.directorNote }] : [])
-  ];
+  return [{ turn: node.turn, label: node.stageLabel, text: node.scene }];
 }
 
 function cloneValue(value) {
@@ -651,6 +703,24 @@ function revealNextParagraph() {
     return;
   }
   currentIndex.value += 1;
+  scrollStoryToBottom();
+}
+
+function scrollStoryToBottom(behavior = "smooth") {
+  void nextTick(() => {
+    const anchor = storyBottomAnchor.value;
+    const container = storyScrollContainer.value;
+    if (anchor && typeof anchor.scrollIntoView === "function") {
+      anchor.scrollIntoView({ behavior, block: "end" });
+      return;
+    }
+    if (container) {
+      container.scrollTo({
+        top: container.scrollHeight,
+        behavior
+      });
+    }
+  });
 }
 
 async function chooseOption(choice) {
@@ -706,6 +776,7 @@ async function chooseOption(choice) {
     }
     currentIndex.value = -1;
     persistLocalSession();
+    scrollStoryToBottom("auto");
   } catch (err) {
     error.value = err instanceof Error ? err.message : "推进故事失败";
   } finally {
@@ -781,27 +852,54 @@ async function ensureEndingAnalysis() {
     return;
   }
 
+  const traceId = `ending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const startedAt = performance.now();
   analyzingEnding.value = true;
+  error.value = "";
   const controller = createRequestController();
+  const timeoutId = window.setTimeout(() => {
+    controller.abort();
+  }, ENDING_ANALYSIS_TIMEOUT_MS);
+  console.info("[ending-analysis] request-start", {
+    traceId,
+    sessionId: session.value?.id || "",
+    transcriptCount: (runtime.value?.entries || []).length
+  });
   try {
     const completedRunPayload = {
       summary: runtime.value.summary,
       transcript: runtime.value.entries,
       state: runtime.value.state,
       opening: session.value.meta?.opening || "",
-      role: session.value.meta?.role || ""
+      role: session.value.meta?.role || "",
+      traceId
     };
     const result = await analyzeStoryEnding({
       meta: completedRunPayload,
       story: runtime.value.summary || currentNode.value?.scene || ""
     }, { signal: controller.signal });
+    console.info("[ending-analysis] request-success", {
+      traceId,
+      elapsedMs: Math.round(performance.now() - startedAt),
+      hasAnalysis: Boolean(result?.analysis),
+      keys: Object.keys(result?.analysis || {})
+    });
     releaseRequestController(controller);
     endingAnalysis.value = result.analysis;
   } catch (err) {
-    if (err?.name !== "AbortError") {
+    console.warn("[ending-analysis] request-failed", {
+      traceId,
+      elapsedMs: Math.round(performance.now() - startedAt),
+      name: err?.name,
+      message: err instanceof Error ? err.message : String(err || "")
+    });
+    if (err?.name === "AbortError") {
+      error.value = "尾声签语生成超时，请稍后重试。";
+    } else {
       error.value = err instanceof Error ? err.message : "尾声分析生成失败";
     }
   } finally {
+    window.clearTimeout(timeoutId);
     releaseRequestController(controller);
     analyzingEnding.value = false;
   }
@@ -885,19 +983,19 @@ async function launchRecommendedUniverse(libraryStory) {
         :description="overlayDescription"
       />
 
-      <header class="glass-panel fixed left-1/2 top-0 z-30 w-full max-w-md -translate-x-1/2 shrink-0 border-b border-paper-200/70 px-6 py-4 shadow-[0_10px_28px_rgba(74,59,50,0.08)] sm:px-8">
+      <header class="fixed left-1/2 top-0 z-30 w-full max-w-md -translate-x-1/2 shrink-0 border-b border-paper-200/75 bg-paper-50/92 px-5 py-3 backdrop-blur-xl shadow-[0_10px_28px_rgba(74,59,50,0.08)] sm:px-7">
         <div class="flex items-center justify-between gap-3">
           <button
-            class="active-press inline-flex h-11 min-w-11 items-center justify-center rounded-full border border-paper-200 bg-white/88 px-3 text-xl text-paper-700 shadow-[0_4px_14px_rgba(0,0,0,0.06)]"
+            class="active-press inline-flex h-10 min-w-10 items-center justify-center rounded-full border border-paper-200 bg-white/94 px-3 text-lg text-paper-700 shadow-[0_4px_14px_rgba(0,0,0,0.06)]"
             aria-label="返回"
             @click="goBack"
           >
             ←
           </button>
-          <h1 class="mx-2 flex-1 truncate text-center font-serif text-[1.18rem] font-semibold text-paper-900">{{ pageTitle }}</h1>
+          <h1 class="mx-2 flex-1 truncate text-center font-serif text-[1.02rem] font-semibold text-paper-900">{{ pageTitle }}</h1>
           <div class="flex justify-end">
         <button
-          class="active-press min-w-[6.5rem] rounded-full border border-paper-200 bg-white/80 px-3 py-2 text-sm font-semibold text-accent-600 shadow-[0_4px_14px_rgba(0,0,0,0.05)] disabled:text-paper-700/40"
+          class="active-press min-w-[5.8rem] rounded-full border border-paper-200 bg-white/94 px-3 py-1.5 text-xs font-semibold text-accent-600 shadow-[0_4px_14px_rgba(0,0,0,0.05)] disabled:text-paper-700/40"
           :disabled="!canSave"
           @click="handleSave"
         >
@@ -910,15 +1008,23 @@ async function launchRecommendedUniverse(libraryStory) {
       <div v-if="loading" class="flex flex-1 items-center justify-center px-8 py-16 text-paper-800">{{ loadingLabel }}</div>
       <div v-else-if="!session || !runtime || !currentNode" class="flex flex-1 items-center justify-center px-8 py-16 text-paper-800">还没有开始互动故事，请先回到书架创建一个开局。</div>
       <div v-else class="flex min-h-0 flex-1 flex-col">
-        <div class="hide-scrollbar flex-1 overflow-y-auto px-6 pb-12 pt-28 sm:px-8" @click="revealNextParagraph">
-          <div class="space-y-8">
+        <div ref="storyScrollContainer" class="hide-scrollbar flex-1 overflow-y-auto px-5 pb-10 pt-24 sm:px-7" @click="revealNextParagraph">
+          <div class="space-y-6">
+            <div
+              v-if="showOpeningLead"
+              class="rounded-[28px] border border-paper-200 bg-paper-100/70 px-5 py-5"
+            >
+              <p class="mb-2 text-xs uppercase tracking-[0.24em] text-paper-700/55">前情提要</p>
+              <p class="story-prose no-indent">{{ openingLead }}</p>
+            </div>
+
             <div
               v-for="item in renderedHistory"
               :key="item.id"
               class="chunk-in"
             >
               <div v-if="item.type === 'story'" class="space-y-4">
-                <p class="font-serif text-[1.05rem] text-paper-700/55">{{ item.label }}</p>
+                <p class="font-serif text-[0.95rem] text-paper-700/55">{{ item.label }}</p>
                 <p class="story-prose no-indent">{{ item.text }}</p>
               </div>
 
@@ -933,16 +1039,8 @@ async function launchRecommendedUniverse(libraryStory) {
               </div>
             </div>
 
-            <div class="space-y-6">
-              <div
-                v-if="showOpeningLead"
-                class="rounded-[28px] border border-paper-200 bg-paper-100/70 px-5 py-5"
-              >
-                <p class="mb-2 text-xs uppercase tracking-[0.24em] text-paper-700/55">前情提要</p>
-                <p class="story-prose no-indent">{{ openingLead }}</p>
-              </div>
-
-              <p class="text-center font-serif text-[2.1rem] leading-[1.8] text-paper-900">
+            <div class="space-y-5">
+              <p class="text-center font-serif text-[1.7rem] leading-[1.6] text-paper-900">
                 {{ currentNode.stageLabel }}
               </p>
 
@@ -975,24 +1073,13 @@ async function launchRecommendedUniverse(libraryStory) {
                 {{ paragraph }}
               </p>
 
-              <div v-if="currentNode.directorNote" class="rounded-[24px] bg-white/70 px-5 py-4 text-paper-700 shadow-[0_2px_12px_rgba(0,0,0,0.04)]">
-                <p class="text-sm uppercase tracking-[0.24em] text-accent-500/70">局势提示</p>
-                <p class="mt-2 leading-7">{{ currentNode.directorNote }}</p>
-              </div>
-
               <div v-if="isSessionComplete && endingAnalysis" class="chunk-in space-y-4 rounded-[30px] border border-paper-200 bg-white/82 px-5 py-5 shadow-[0_2px_12px_rgba(0,0,0,0.04)]">
                 <p class="text-center font-serif text-[1.45rem] text-paper-900">尾声签语</p>
                 <div class="rounded-[22px] bg-paper-100/80 px-4 py-4">
                   <p class="font-serif text-[1.05rem] font-semibold text-paper-900">{{ endingAnalysis.title }}</p>
-                  <div v-if="endingAnalysis.personaTags?.length" class="mt-3 flex flex-wrap gap-2">
-                    <span
-                      v-for="tag in endingAnalysis.personaTags"
-                      :key="tag"
-                      class="rounded-full bg-white px-3 py-1.5 text-xs font-semibold text-paper-800"
-                    >
-                      {{ tag }}
-                    </span>
-                  </div>
+                  <p v-if="endingTags.length" class="mt-2 text-xs tracking-[0.06em] text-paper-700/60">
+                    这局的你：{{ endingTags.join(" · ") }}
+                  </p>
                   <p class="mt-3 text-sm leading-7 text-paper-700/80">{{ endingAnalysis.romance }}</p>
                   <p class="mt-2 text-sm leading-7 text-paper-700/70">{{ endingAnalysis.life }}</p>
                 </div>
@@ -1041,28 +1128,34 @@ async function launchRecommendedUniverse(libraryStory) {
                 {{ saveMessage }}
               </p>
               <p v-if="error" class="rounded-[24px] bg-red-50 px-4 py-3 text-sm text-red-700">{{ error }}</p>
+              <div ref="storyBottomAnchor"></div>
             </div>
           </div>
         </div>
 
         <footer
+          ref="choiceDock"
           v-if="currentNodeLoaded && isRevealComplete && !isSessionComplete"
-          class="glass-panel slide-up border-t border-paper-200/70 px-5 pb-5 pt-4 safe-pb sm:px-6"
+          class="glass-panel slide-up sticky bottom-0 z-20 border-t border-paper-200/70 px-4 pb-4 pt-3 safe-pb sm:px-5"
         >
-          <div class="mx-auto max-w-md space-y-3">
+          <div class="mx-auto max-w-md space-y-2.5">
+            <div v-if="currentNode.directorNote" class="rounded-[16px] border border-accent-200/50 bg-accent-50/60 px-3.5 py-2.5 text-paper-700">
+              <p class="text-[0.68rem] uppercase tracking-[0.2em] text-accent-600/80">局势提示</p>
+              <p class="mt-1 text-sm leading-5">{{ currentNode.directorNote }}</p>
+            </div>
             <button
               v-for="choice in choiceList"
               :key="choice.id"
-              class="active-press w-full rounded-[24px] border px-5 py-5 text-left shadow-[0_2px_12px_rgba(0,0,0,0.04)]"
+              class="active-press w-full rounded-[18px] border px-4 py-3 text-left shadow-[0_2px_10px_rgba(0,0,0,0.04)]"
               :class="choice.isRecommended ? 'border-accent-500/55 bg-white text-paper-900' : 'border-paper-200 bg-white text-paper-900'"
               :disabled="choosingOption"
               @click="chooseOption(choice)"
             >
-              <div class="flex items-start gap-3">
+              <div class="flex items-start gap-2.5">
                 <span class="mt-2 h-1.5 w-1.5 rounded-full bg-accent-400"></span>
-                <div class="space-y-1">
-                  <p class="text-[1.08rem] leading-8">{{ choice.text }}</p>
-                  <p class="text-sm text-paper-700/55">
+                <div class="space-y-0.5">
+                  <p class="text-[0.98rem] leading-6">{{ choice.text }}</p>
+                  <p class="text-xs text-paper-700/55">
                     {{ choice.tone || choice.style }}
                     <span v-if="choice.isRecommended"> · 推荐</span>
                     <span v-if="choice.isAiChoice"> · AI 会选</span>
