@@ -233,9 +233,9 @@ def _split_scene_into_paragraphs(scene: str) -> list[str]:
     normalized = scene.replace("\r\n", "\n").strip()
     paragraphs = [part.strip() for part in normalized.split("\n") if part.strip()]
     if len(paragraphs) >= 2:
-        return paragraphs[:4]
+        return paragraphs[:5]
     chunks = [part.strip() for part in normalized.replace("。", "。\n").split("\n") if part.strip()]
-    return chunks[:4] if chunks else [scene]
+    return chunks[:5] if chunks else [scene]
 
 
 def _normalize_ending_analysis(raw_text: str) -> dict[str, Any]:

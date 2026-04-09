@@ -1,6 +1,7 @@
 const STORIES_CACHE_KEY = "potato-novel-stories-cache-v1";
 const LIBRARY_SESSION_CACHE_KEY = "potato-novel-library-session-cache-v1";
 const LIBRARY_STORIES_CACHE_KEY = "potato-novel-library-stories";
+const CUSTOM_PACKAGES_CACHE_KEY = "potato-novel-custom-packages-cache-v1";
 
 function readCacheMap() {
   try {
@@ -17,6 +18,23 @@ function readCacheMap() {
 
 function writeCacheMap(cacheMap) {
   localStorage.setItem(STORIES_CACHE_KEY, JSON.stringify(cacheMap));
+}
+
+function readCustomPackagesMap() {
+  try {
+    const raw = localStorage.getItem(CUSTOM_PACKAGES_CACHE_KEY);
+    if (!raw) {
+      return {};
+    }
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeCustomPackagesMap(cacheMap) {
+  localStorage.setItem(CUSTOM_PACKAGES_CACHE_KEY, JSON.stringify(cacheMap));
 }
 
 export function readStoriesCache(userId) {
@@ -56,6 +74,37 @@ export function clearStoriesCache(userId) {
   const cacheMap = readCacheMap();
   delete cacheMap[userId];
   writeCacheMap(cacheMap);
+}
+
+export function readCustomPackagesCache(userId) {
+  if (!userId) {
+    return [];
+  }
+  const cacheMap = readCustomPackagesMap();
+  const rows = cacheMap[userId];
+  return Array.isArray(rows) ? rows : [];
+}
+
+export function upsertCustomPackageCache(userId, sessionPayload) {
+  if (!userId || !sessionPayload?.id) {
+    return;
+  }
+  const sourceType = String(sessionPayload?.sourceType || sessionPayload?.meta?.sourceType || "").toLowerCase();
+  if (sourceType !== "custom") {
+    return;
+  }
+  const cacheMap = readCustomPackagesMap();
+  const rows = Array.isArray(cacheMap[userId]) ? cacheMap[userId] : [];
+  const row = {
+    id: sessionPayload.id,
+    updatedAt: Date.now(),
+    opening: sessionPayload?.meta?.opening || "",
+    title: sessionPayload?.package?.title || "",
+    sourceType: "custom",
+    session: sessionPayload,
+  };
+  cacheMap[userId] = [row, ...rows.filter((item) => item?.id !== row.id)];
+  writeCustomPackagesMap(cacheMap);
 }
 
 export function readLibraryStoriesCache() {

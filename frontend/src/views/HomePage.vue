@@ -64,25 +64,32 @@ function enterBookshelf() {
         </div>
 
         <div v-else class="w-full space-y-6">
-          <button
-            v-if="!user"
-            class="active-press w-full rounded-[26px] bg-paper-900 px-6 py-7 text-xl font-semibold text-paper-50"
-            @click="login"
-          >
-            使用 SecondMe 登录
-          </button>
+          <template v-if="!user">
+            <button
+              class="active-press w-full rounded-[26px] bg-paper-900 px-6 py-7 text-xl font-semibold text-paper-50"
+              @click="login"
+            >
+              使用 SecondMe 登录
+            </button>
+            <button
+              class="active-press w-full rounded-[22px] border border-paper-300 bg-white/82 px-6 py-4 text-base font-semibold tracking-[0.08em] text-paper-800"
+              @click="enterBookshelf"
+            >
+              游客进入书城
+            </button>
+          </template>
 
           <button
             v-else
             class="active-press w-full rounded-[26px] bg-paper-900 px-6 py-7 text-xl font-semibold text-paper-50"
             @click="enterBookshelf"
           >
-            进入我的宇宙
+            进入我的故事间
           </button>
 
           <div class="space-y-2 text-sm text-paper-700/55">
             <p v-if="user">欢迎回来，{{ user.name || user.nickname || "创作者" }}</p>
-            <p v-else>登录即代表同意用户协议</p>
+            <p v-else>游客模式可直接体验，故事仅保存在本机；登录可同步云端。</p>
           </div>
         </div>
       </div>

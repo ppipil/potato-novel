@@ -23,13 +23,19 @@ const reviewTitle = computed(() => {
   return firstLine?.replace(/^《/, "").replace(/》$/, "") || "阅读回顾";
 });
 
-const parsedBlocks = computed(() => parseStoryBlocks(currentStory.value?.story || ""));
+const parsedBlocks = computed(() =>
+  parseStoryBlocks(currentStory.value?.story || "", currentStory.value?.meta?.opening || "")
+);
 const reviewPersonaSummary = computed(() => endingAnalysis.value);
+const GUEST_CACHE_USER_ID = "__guest_local__";
+const viewerUserId = ref("");
+const isGuestViewer = computed(() => viewerUserId.value === GUEST_CACHE_USER_ID);
 
 onMounted(async () => {
   const targetStoryId = typeof route.query.storyId === "string" ? route.query.storyId : "";
   const cachedUser = readUserCache();
-  const cachedStories = readStoriesCache(cachedUser?.userId || "");
+  viewerUserId.value = cachedUser?.userId || GUEST_CACHE_USER_ID;
+  const cachedStories = readStoriesCache(viewerUserId.value);
   if (cachedStories.length) {
     stories.value = cachedStories;
     const preferredStory = (targetStoryId && cachedStories.find((item) => item.id === targetStoryId)) || cachedStories[0];
@@ -40,11 +46,16 @@ onMounted(async () => {
     }
   }
 
+  if (isGuestViewer.value) {
+    loading.value = false;
+    return;
+  }
+
   try {
     const result = await listStories();
     stories.value = result.stories || [];
-    if (cachedUser?.userId) {
-      writeStoriesCache(cachedUser.userId, stories.value);
+    if (viewerUserId.value) {
+      writeStoriesCache(viewerUserId.value, stories.value);
     }
     const preferredStoryId = targetStoryId || currentStory.value?.id || stories.value[0]?.id;
     if (preferredStoryId) {
@@ -66,6 +77,17 @@ function goBack() {
 }
 
 async function openStory(storyId) {
+  if (isGuestViewer.value) {
+    const localStory = stories.value.find((item) => item.id === storyId);
+    if (!localStory) {
+      error.value = "读取失败";
+      return;
+    }
+    currentStory.value = localStory;
+    endingAnalysis.value = localStory.meta?.endingAnalysis || null;
+    error.value = "";
+    return;
+  }
   try {
     const result = await getStory(storyId);
     currentStory.value = result.story;
@@ -78,6 +100,10 @@ async function openStory(storyId) {
 
 async function ensureEndingAnalysis(storyRecord) {
   if (!storyRecord || analyzingEnding.value) {
+    return;
+  }
+  if (isGuestViewer.value) {
+    error.value = "游客模式暂不支持尾声签语，请登录后使用。";
     return;
   }
 
@@ -125,8 +151,14 @@ async function ensureEndingAnalysis(storyRecord) {
   }
 }
 
-function parseStoryBlocks(storyText) {
+function parseStoryBlocks(storyText, openingFallback = "") {
   if (!storyText.trim()) {
+    if (openingFallback.trim()) {
+      return [
+        { type: "heading", text: "故事开端" },
+        { type: "story", text: openingFallback.trim() }
+      ];
+    }
     return [];
   }
 
@@ -158,7 +190,6 @@ function parseStoryBlocks(storyText) {
     }
 
     if (segment.startsWith("玩家身份：") || segment.startsWith("创作者：")) {
-      blocks.push({ type: "meta", text: segment });
       continue;
     }
 
@@ -187,6 +218,15 @@ function parseStoryBlocks(storyText) {
     }
 
     blocks.push({ type: "story", text: segment });
+  }
+
+  const hasOpeningHeading = blocks.some((item) => item.type === "heading" && String(item.text || "").includes("故事开端"));
+  if (!hasOpeningHeading && openingFallback.trim()) {
+    return [
+      { type: "heading", text: "故事开端" },
+      { type: "story", text: openingFallback.trim() },
+      ...blocks
+    ];
   }
 
   return blocks;
@@ -304,7 +344,7 @@ function extractTranscriptFromStory(storyText) {
               </div>
 
               <button
-                v-else-if="currentStory"
+                v-else-if="currentStory && !isGuestViewer"
                 class="active-press w-full rounded-[30px] border border-paper-200 bg-white/82 px-5 py-5 text-center shadow-[0_2px_12px_rgba(0,0,0,0.04)]"
                 :disabled="analyzingEnding"
                 @click="ensureEndingAnalysis(currentStory)"

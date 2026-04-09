@@ -26,6 +26,7 @@ class Settings:
     volcengine_model: str = os.getenv("VOLCENGINE_MODEL", "")
     volcengine_base_url: str = os.getenv("VOLCENGINE_BASE_URL", "")
     volcengine_chat_path: str = os.getenv("VOLCENGINE_CHAT_PATH", "/chat/completions")
+    library_workbench_operator_ids: str = os.getenv("LIBRARY_WORKBENCH_OPERATOR_IDS", "")
 
 
 settings = Settings()
