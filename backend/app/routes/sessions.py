@@ -17,7 +17,7 @@ def create_sessions_router(deps: SimpleNamespace) -> APIRouter:
     async def start_story(request: Request) -> JSONResponse:
         """统一的故事开始入口，返回可读的 story session。"""
         deps.require_env()
-        server_session = deps.get_server_session(request)
+        server_session = deps.get_server_or_guest_session(request)
         body = await request.json()
         session_record, reused = await deps.create_or_reuse_story_package(body, server_session)
         if session_record.get("kind") == "story_package":
@@ -28,7 +28,7 @@ def create_sessions_router(deps: SimpleNamespace) -> APIRouter:
     async def generate_custom_story(request: Request) -> JSONResponse:
         """根据自定义 opening 生成一条新的故事会话。"""
         deps.require_env()
-        server_session = deps.get_server_session(request)
+        server_session = deps.get_server_or_guest_session(request)
         body = await request.json()
         opening = deps.clean_model_text(body.get("opening", ""))
         role = deps.clean_model_text(body.get("role", "")) or "主人公"
@@ -113,5 +113,41 @@ def create_sessions_router(deps: SimpleNamespace) -> APIRouter:
     async def generate_story(request: Request) -> JSONResponse:
         """兼容旧路由，转发到 start_story。"""
         return await start_story(request)
+
+    @router.post("/api/story-packages/import")
+    async def import_story_package(request: Request) -> JSONResponse:
+        """导入一个完整 story package 并落库存为可直接游玩的会话。"""
+        deps.require_env()
+        server_session = deps.get_server_session(request)
+        body = await request.json()
+        raw_package = body.get("package")
+        if not isinstance(raw_package, dict):
+            raise HTTPException(status_code=400, detail="Missing package")
+
+        validation_error = deps.story_package_validation_error(raw_package)
+        if validation_error:
+            raise HTTPException(status_code=400, detail={"message": validation_error})
+
+        opening = deps.clean_model_text(body.get("opening", "")) or deps.clean_model_text(raw_package.get("title", "")) or "导入故事包"
+        role = deps.clean_model_text(body.get("role", "")) or "主人公"
+        source_type = deps.clean_model_text(body.get("sourceType", "")) or "custom"
+        if source_type not in {"custom", "library"}:
+            source_type = "custom"
+
+        session_record = deps.build_story_package_session_payload(
+            server_session=server_session,
+            opening=opening,
+            role=role,
+            source_type=source_type,
+            story_package=raw_package,
+        )
+        session_record["meta"] = {
+            **(session_record.get("meta") or {}),
+            "imported": True,
+            "importTag": deps.clean_model_text(body.get("importTag", "")) or "manual",
+        }
+        deps.insert_new_session_record(session_record)
+        deps.ensure_story_package_runtime(session_record)
+        return JSONResponse({"ok": True, "session": deps.serialize_session(session_record), "imported": True})
 
     return router

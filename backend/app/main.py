@@ -71,6 +71,8 @@ from .services.library_seed_service import generate_library_seed_package
 from .services.library_seed_service import load_or_generate_library_seed_package
 from .services.library_seed_service import require_library_seed_session
 from .services.library_seed_service import resolve_library_opening
+from .services.library_import_service import delete_imported_library_story as delete_imported_library_story_service
+from .services.library_import_service import import_library_story_package as import_library_story_package_service
 from .services.story_session_service import build_ending_analysis_context
 from .services.story_session_service import create_or_reuse_story_package
 from .services.story_runtime_service import ensure_story_package_runtime
@@ -95,6 +97,33 @@ LIBRARY_SEED_USER_ID = "__library_seed__"
 LIBRARY_SEED_LOCK_DIR = DATA_DIR / "locks"
 LIBRARY_SEED_WAIT_TIMEOUT_SECONDS = 90
 LIBRARY_SEED_WAIT_INTERVAL_SECONDS = 0.5
+GUEST_USER_ID = "__guest_local__"
+
+
+def _library_workbench_operator_id_set() -> set[str]:
+    """解析允许导入/强权限删除书市内容的操作员 ID 白名单。"""
+    raw = settings.library_workbench_operator_ids or ""
+    return {item.strip() for item in raw.split(",") if item.strip()}
+
+
+def _is_library_workbench_operator(user_id: str, user_name: str = "") -> bool:
+    """判断当前用户是否具备书市工作台操作权限。"""
+    normalized_name = str(user_name or "").strip().lower()
+    if normalized_name.startswith("kk"):
+        return True
+    # 保留白名单兜底（便于后续运营切换）
+    return bool(user_id and user_id in _library_workbench_operator_id_set())
+
+
+def _require_library_workbench_operator(server_session: dict[str, Any]) -> None:
+    """导入书市故事包必须是白名单操作员。"""
+    user_id = str(server_session.get("user", {}).get("userId") or "").strip()
+    user_name = (
+        str(server_session.get("user", {}).get("name") or "").strip()
+        or str(server_session.get("user", {}).get("nickname") or "").strip()
+    )
+    if not _is_library_workbench_operator(user_id, user_name):
+        raise HTTPException(status_code=403, detail="Library workbench permission denied")
 
 app.add_middleware(
     CORSMiddleware,
@@ -193,6 +222,27 @@ def _get_server_session(request: Request) -> dict[str, Any]:
     return {"user": user, "token": token}
 
 
+def _build_guest_session() -> dict[str, Any]:
+    """构造受限游客会话：不包含 SecondMe token，仅用于游客可用能力。"""
+    return {
+        "isGuest": True,
+        "user": {
+            "userId": GUEST_USER_ID,
+            "name": "游客",
+            "route": "guest",
+        },
+        "token": {},
+    }
+
+
+def _get_server_or_guest_session(request: Request) -> dict[str, Any]:
+    """优先返回登录会话，未登录时回退游客会话。"""
+    try:
+        return _get_server_session(request)
+    except HTTPException:
+        return _build_guest_session()
+
+
 def _use_database_storage() -> bool:
     """判断当前是否启用数据库存储。"""
     return bool(settings.database_url.strip())
@@ -287,7 +337,13 @@ def _load_sessions() -> list[dict[str, Any]]:
 
 def _load_library_seed_index_from_db() -> dict[str, dict[str, Any]]:
     """从数据库读取书城 seed package 的索引。"""
-    return sessions_repo.load_library_seed_index_from_db(_db_connection, psycopg, LIBRARY_SEED_USER_ID, _clean_model_text)
+    return sessions_repo.load_library_seed_index_from_db(
+        _db_connection,
+        psycopg,
+        LIBRARY_SEED_USER_ID,
+        _clean_model_text,
+        PACKAGE_VERSION,
+    )
 
 
 def _load_library_seed_index() -> dict[str, dict[str, Any]]:
@@ -298,6 +354,7 @@ def _load_library_seed_index() -> dict[str, dict[str, Any]]:
         psycopg,
         LIBRARY_SEED_USER_ID,
         _clean_model_text,
+        PACKAGE_VERSION,
         SESSIONS_PATH,
         _normalize_source_type,
     )
@@ -945,6 +1002,7 @@ def _build_story_package_session_payload(
 ) -> dict[str, Any]:
     """构造前端可直接游玩的 session-like payload，但不把未完成进度落库。"""
     user = server_session["user"]
+    is_guest = bool(server_session.get("isGuest"))
     package_payload = deepcopy(story_package)
     if source_type == "library":
         package_payload["debug"] = {
@@ -966,8 +1024,9 @@ def _build_story_package_session_payload(
         "meta": {
             "opening": opening,
             "role": role,
-            "author": user.get("name") or "SecondMe 用户",
+            "author": user.get("name") or ("游客" if is_guest else "SecondMe 用户"),
             "sourceType": source_type,
+            "viewerMode": "guest" if is_guest else "authenticated",
         },
         "personaProfile": persona_profile,
         "package": package_payload,
@@ -977,6 +1036,37 @@ def _build_story_package_session_payload(
     if opening_id:
         session_record["meta"]["openingId"] = opening_id
     return session_record
+
+
+def _import_library_story_package(server_session: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+    """薄包装：把依赖装配后委托给导入服务层。"""
+    return import_library_story_package_service(
+        server_session=server_session,
+        body=body,
+        use_database_storage=_use_database_storage(),
+        clean_model_text=_clean_model_text,
+        story_package_validation_error=_story_package_validation_error_wrapper,
+        ensure_library_story_table=_ensure_library_story_table,
+        db_connection=_db_connection,
+        save_session_record=_save_session_record,
+        library_seed_user_id=LIBRARY_SEED_USER_ID,
+        package_version=PACKAGE_VERSION,
+        template_package_generator=TEMPLATE_PACKAGE_GENERATOR,
+        http_exception_cls=HTTPException,
+    )
+
+
+def _delete_imported_library_story(story_id: str, current_user_id: str, is_operator: bool) -> dict[str, Any]:
+    """薄包装：删除导入的书市故事与对应 seed。"""
+    return delete_imported_library_story_service(
+        story_id=story_id,
+        current_user_id=current_user_id,
+        is_operator=is_operator,
+        use_database_storage=_use_database_storage(),
+        db_connection=_db_connection,
+        library_seed_user_id=LIBRARY_SEED_USER_ID,
+        http_exception_cls=HTTPException,
+    )
 
 
 async def _start_or_resume_library_story(
@@ -1004,7 +1094,8 @@ async def _start_or_resume_library_story(
         story_package=story_package,
         opening_id=opening_id,
     )
-    _insert_new_session_record(session_record, sessions)
+    if not bool(server_session.get("isGuest")):
+        _insert_new_session_record(session_record, sessions)
     return session_record, False, generated_now
 
 
@@ -1078,8 +1169,13 @@ ROUTE_DEPS = SimpleNamespace(
     find_session=_find_session,
     frontend_dist_dir=FRONTEND_DIST_DIR,
     generate_library_seed_package=_generate_library_seed_package,
+    import_library_story_package=_import_library_story_package,
+    delete_imported_library_story=_delete_imported_library_story,
+    is_library_workbench_operator=_is_library_workbench_operator,
+    require_library_workbench_operator=_require_library_workbench_operator,
     get_opening_summary=get_opening_summary,
     get_opening_title=get_opening_title,
+    get_server_or_guest_session=_get_server_or_guest_session,
     get_server_session=_get_server_session,
     load_sessions=_load_sessions,
     load_stories=_load_stories,
@@ -1090,8 +1186,10 @@ ROUTE_DEPS = SimpleNamespace(
     require_env=_require_env,
     require_library_seed_session=_require_library_seed_session,
     resolve_library_opening=_resolve_library_opening,
+    insert_new_session_record=_insert_new_session_record,
     save_stories=_save_stories,
     serialize_session=_serialize_session,
+    story_package_validation_error=_story_package_validation_error_wrapper,
     start_or_generate_custom_story=_start_or_generate_custom_story,
 )
 

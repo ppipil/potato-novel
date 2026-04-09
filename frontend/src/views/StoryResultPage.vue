@@ -9,12 +9,19 @@ import {
   saveStory,
   startLibraryStoryFromSeed
 } from "../lib/api";
-import { readLibrarySessionCache, readLibraryStoriesCache, upsertStoryCache, writeLibrarySessionCache } from "../lib/storyCache";
+import {
+  readLibrarySessionCache,
+  readLibraryStoriesCache,
+  upsertCustomPackageCache,
+  upsertStoryCache,
+  writeLibrarySessionCache
+} from "../lib/storyCache";
 import { consumeTransferredStorySession, setTransferredStorySession } from "../lib/storySessionTransfer";
 import { readUserCache } from "../lib/userCache";
 
 const router = useRouter();
 const route = useRoute();
+const OPEN_SHELF_TAB_KEY = "potato-novel-open-shelf-tab";
 const session = ref(null);
 const runtime = ref(null);
 const error = ref("");
@@ -33,6 +40,9 @@ const storyScrollContainer = ref(null);
 const storyBottomAnchor = ref(null);
 const choiceDock = ref(null);
 let choiceAudioContext = null;
+let choiceFlipStreak = 0;
+let choiceFlipResetTimer = 0;
+let choiceNoiseBuffer = null;
 const activeRequestControllers = new Set();
 const currentUserId = computed(() => {
   const cachedUser = readUserCache();
@@ -99,9 +109,22 @@ const isRevealComplete = computed(() => {
 });
 const isSessionComplete = computed(() => runtime.value?.status === "complete");
 const isEndingNode = computed(() => currentNode.value?.kind === "ending" || isSessionComplete.value);
+const isGuestSession = computed(() => {
+  const mode = String(session.value?.meta?.viewerMode || "").toLowerCase();
+  if (mode === "guest") {
+    return true;
+  }
+  const sessionUserId = String(session.value?.userId || "");
+  return sessionUserId === "__guest_local__";
+});
 const canSave = computed(() => isSessionComplete.value && !syncingSave.value);
 const canRequestEndingAnalysis = computed(() =>
-  Boolean(session.value?.id) && isSessionComplete.value && isRevealComplete.value && !endingAnalysis.value && !analyzingEnding.value
+  Boolean(session.value?.id) &&
+  isSessionComplete.value &&
+  isRevealComplete.value &&
+  !endingAnalysis.value &&
+  !analyzingEnding.value &&
+  !isGuestSession.value
 );
 const endingTags = computed(() => (endingAnalysis.value?.personaTags || []).slice(0, 2));
 const currentState = computed(() => runtime.value?.state || packageData.value?.initialState || {});
@@ -338,6 +361,10 @@ onMounted(async () => {
 
 onUnmounted(() => {
   abortActiveStoryRequests();
+  if (choiceFlipResetTimer) {
+    window.clearTimeout(choiceFlipResetTimer);
+    choiceFlipResetTimer = 0;
+  }
 });
 
 watch(
@@ -378,11 +405,14 @@ function goBack() {
   abortActiveStoryRequests();
   analyzingEnding.value = false;
   loading.value = false;
+  const targetTab = route.query.fromTab === "public" ? "public" : "mine";
+  sessionStorage.setItem(OPEN_SHELF_TAB_KEY, targetTab);
+  sessionStorage.removeItem("potato-novel-open-mine-tab");
   if (window.history.length > 1) {
     router.back();
     return;
   }
-  router.push("/bookshelf");
+  router.push(`/bookshelf?tab=${targetTab}`);
 }
 
 function buildNodeEntries(node) {
@@ -523,7 +553,24 @@ function resolveInfluencedEndingNode(targetNode, projectedState) {
   return preferredEndingNode || targetNode;
 }
 
-function playPageTurnSound() {
+function getChoiceNoiseBuffer(audioContext) {
+  if (choiceNoiseBuffer && choiceNoiseBuffer.sampleRate === audioContext.sampleRate) {
+    return choiceNoiseBuffer;
+  }
+  const bufferSize = Math.floor(audioContext.sampleRate * 0.28);
+  const buffer = audioContext.createBuffer(1, bufferSize, audioContext.sampleRate);
+  const channel = buffer.getChannelData(0);
+  for (let i = 0; i < bufferSize; i += 1) {
+    // White noise with tiny smoothing: closer to paper-rustle than static hiss.
+    const raw = (Math.random() * 2 - 1) * 0.85;
+    const prev = i > 0 ? channel[i - 1] : 0;
+    channel[i] = (raw * 0.72) + (prev * 0.28);
+  }
+  choiceNoiseBuffer = buffer;
+  return buffer;
+}
+
+function playChoiceClickSound() {
   if (typeof window === "undefined") {
     return;
   }
@@ -539,43 +586,74 @@ function playPageTurnSound() {
     if (choiceAudioContext.state === "suspended") {
       void choiceAudioContext.resume();
     }
+
+    choiceFlipStreak = Math.min(6, choiceFlipStreak + 1);
+    if (choiceFlipResetTimer) {
+      window.clearTimeout(choiceFlipResetTimer);
+    }
+    choiceFlipResetTimer = window.setTimeout(() => {
+      choiceFlipStreak = 0;
+      choiceFlipResetTimer = 0;
+    }, 2600);
+
     const now = choiceAudioContext.currentTime + 0.005;
     const master = choiceAudioContext.createGain();
     master.gain.setValueAtTime(0.001, now);
-    master.gain.exponentialRampToValueAtTime(0.32, now + 0.01);
-    master.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+    master.gain.exponentialRampToValueAtTime(0.2 + (choiceFlipStreak * 0.03), now + 0.012);
+    master.gain.exponentialRampToValueAtTime(0.001, now + 0.24);
     master.connect(choiceAudioContext.destination);
 
-    const toneA = choiceAudioContext.createOscillator();
-    const gainA = choiceAudioContext.createGain();
-    toneA.type = "triangle";
-    toneA.frequency.setValueAtTime(980, now);
-    toneA.frequency.exponentialRampToValueAtTime(620, now + 0.09);
-    gainA.gain.setValueAtTime(0.001, now);
-    gainA.gain.exponentialRampToValueAtTime(0.24, now + 0.008);
-    gainA.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
-    toneA.connect(gainA);
-    gainA.connect(master);
+    const noiseSource = choiceAudioContext.createBufferSource();
+    noiseSource.buffer = getChoiceNoiseBuffer(choiceAudioContext);
+    const noiseFilter = choiceAudioContext.createBiquadFilter();
+    noiseFilter.type = "bandpass";
+    noiseFilter.frequency.setValueAtTime(1400 - (choiceFlipStreak * 70), now);
+    noiseFilter.Q.setValueAtTime(0.9, now);
+    const noiseGain = choiceAudioContext.createGain();
+    noiseGain.gain.setValueAtTime(0.001, now);
+    noiseGain.gain.exponentialRampToValueAtTime(0.18 + (choiceFlipStreak * 0.02), now + 0.02);
+    noiseGain.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
+    noiseSource.connect(noiseFilter);
+    noiseFilter.connect(noiseGain);
+    noiseGain.connect(master);
+    noiseSource.start(now);
+    noiseSource.stop(now + 0.22);
 
-    const toneB = choiceAudioContext.createOscillator();
-    const gainB = choiceAudioContext.createGain();
-    toneB.type = "sine";
-    toneB.frequency.setValueAtTime(430, now + 0.03);
-    toneB.frequency.exponentialRampToValueAtTime(260, now + 0.16);
-    gainB.gain.setValueAtTime(0.001, now + 0.03);
-    gainB.gain.exponentialRampToValueAtTime(0.18, now + 0.045);
-    gainB.gain.exponentialRampToValueAtTime(0.001, now + 0.17);
-    toneB.connect(gainB);
-    gainB.connect(master);
+    if (choiceFlipStreak >= 2) {
+      const rustle = choiceAudioContext.createBufferSource();
+      rustle.buffer = getChoiceNoiseBuffer(choiceAudioContext);
+      const rustleFilter = choiceAudioContext.createBiquadFilter();
+      rustleFilter.type = "highpass";
+      rustleFilter.frequency.setValueAtTime(900, now + 0.016);
+      const rustleGain = choiceAudioContext.createGain();
+      rustleGain.gain.setValueAtTime(0.001, now + 0.012);
+      rustleGain.gain.exponentialRampToValueAtTime(0.09 + (choiceFlipStreak * 0.012), now + 0.04);
+      rustleGain.gain.exponentialRampToValueAtTime(0.001, now + 0.19);
+      rustle.connect(rustleFilter);
+      rustleFilter.connect(rustleGain);
+      rustleGain.connect(master);
+      rustle.start(now + 0.012);
+      rustle.stop(now + 0.2);
+    }
 
-    toneA.start(now);
-    toneA.stop(now + 0.11);
-    toneB.start(now + 0.03);
-    toneB.stop(now + 0.18);
+    if (choiceFlipStreak >= 4) {
+      const spine = choiceAudioContext.createOscillator();
+      const spineGain = choiceAudioContext.createGain();
+      spine.type = "triangle";
+      spine.frequency.setValueAtTime(190, now + 0.025);
+      spine.frequency.exponentialRampToValueAtTime(120, now + 0.12);
+      spineGain.gain.setValueAtTime(0.001, now + 0.02);
+      spineGain.gain.exponentialRampToValueAtTime(0.07 + (choiceFlipStreak * 0.008), now + 0.038);
+      spineGain.gain.exponentialRampToValueAtTime(0.001, now + 0.14);
+      spine.connect(spineGain);
+      spineGain.connect(master);
+      spine.start(now + 0.02);
+      spine.stop(now + 0.15);
+    }
   } catch (err) {
     try {
       if (localStorage.getItem("potato-story-debug") === "1") {
-        console.warn("[potato-story-audio] page turn sound failed", err);
+        console.warn("[potato-story-audio] choice click sound failed", err);
       }
     } catch {
       // ignore debug logging failures
@@ -636,13 +714,15 @@ function persistLocalSession() {
   if (!session.value) {
     return;
   }
+  const persisted = {
+    ...session.value,
+    runtime: runtime.value
+  };
   sessionStorage.setItem(
     "potato-novel-story-session",
-    JSON.stringify({
-      ...session.value,
-      runtime: runtime.value
-    })
+    JSON.stringify(persisted)
   );
+  upsertCustomPackageCache(currentUserId.value, persisted);
 }
 
 function mergeSession(nextSession) {
@@ -664,27 +744,32 @@ function buildCompletedRunPayload() {
 
 function buildOptimisticStoryText() {
   const title = pageTitle.value ? `《${pageTitle.value.replace(/^《|》$/g, "")}》` : "《未命名互动宇宙》";
-  const metaLines = [
+  const opening = session.value?.meta?.opening || "";
+  const headerLines = [
     title,
-    `玩家身份：${session.value?.meta?.role || "主人公"}`,
-    `创作者：${session.value?.meta?.author || "SecondMe 用户"}`
-  ];
+    "【故事开端】",
+    opening
+  ].filter(Boolean);
   const bodyLines = (runtime.value?.entries || [])
     .filter((item) => item?.text)
     .map((item) => {
       const label = item.label ? `【${item.label}】` : "";
       return `${label}\n${item.text}`;
     });
-  return [...metaLines, ...bodyLines].join("\n\n");
+  return [...headerLines, ...bodyLines].join("\n\n");
 }
 
 function buildOptimisticSavedStory(finalized) {
+  const cachedUser = readUserCache();
+  const resolvedUserId = isGuestSession.value
+    ? (currentUserId.value || "__guest_local__")
+    : (cachedUser?.userId || currentUserId.value || "");
   const turnCount = finalized?.meta?.turnCount || runtime.value?.path?.length + 1 || 1;
   return {
     id: `local-${session.value?.id || Date.now()}`,
     createdAt: Date.now(),
     updatedAt: Date.now(),
-    userId: currentUserId.value,
+    userId: resolvedUserId,
     meta: {
       ...(finalized?.meta || {}),
       opening: finalized?.meta?.opening || session.value?.meta?.opening || "",
@@ -736,7 +821,7 @@ async function chooseOption(choice) {
     if (!targetNode) {
       throw new Error("下一剧情节点不存在");
     }
-    playPageTurnSound();
+    playChoiceClickSound();
     const previousState = runtime.value?.state || packageData.value?.initialState || {};
     const projectedState = applyChoiceEffects(previousState, choice, targetNode, (runtime.value?.path?.length || 0) + 1);
     const nextNode = resolveInfluencedEndingNode(targetNode, projectedState);
@@ -806,6 +891,8 @@ async function handleSave() {
   optimisticSavedStoryId.value = optimisticStory.id;
   upsertStoryCache(optimisticStory.userId, optimisticStory);
   saveMessage.value = `已加入书架，正在同步云端，共记录 ${optimisticStory.meta.turnCount || runtime.value.path.length + 1} 个回合。`;
+  sessionStorage.setItem(OPEN_SHELF_TAB_KEY, "mine");
+  sessionStorage.removeItem("potato-novel-open-mine-tab");
   session.value = {
     ...session.value,
     status: "complete",
@@ -814,6 +901,11 @@ async function handleSave() {
   persistLocalSession();
 
   void (async () => {
+    if (isGuestSession.value) {
+      saveMessage.value = `已保存到本地书架，共记录 ${optimisticStory.meta.turnCount || runtime.value.path.length + 1} 个回合。`;
+      syncingSave.value = false;
+      return;
+    }
     try {
       const finalized = finalizedPayload.value || {
         story: buildOptimisticStoryText(),
@@ -1109,6 +1201,12 @@ async function launchRecommendedUniverse(libraryStory) {
                   {{ analyzingEnding ? "正在生成尾声签语" : "生成尾声签语" }}
                 </p>
               </button>
+              <div
+                v-else-if="isSessionComplete && isRevealComplete && isGuestSession"
+                class="chunk-in rounded-[30px] border border-paper-200 bg-paper-100/78 px-5 py-5 text-sm leading-7 text-paper-700"
+              >
+                游客模式下不开放尾声签语。登录后重玩同一宇宙即可解锁该功能。
+              </div>
 
               <p
                 v-if="currentNodeLoaded && !isRevealComplete && !isSessionComplete"

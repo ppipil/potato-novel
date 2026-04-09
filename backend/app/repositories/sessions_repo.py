@@ -71,12 +71,13 @@ def load_library_seed_index_from_db(
     psycopg_module: Any,
     library_seed_user_id: str,
     clean_model_text: Callable[[str], str],
+    package_version: int,
 ) -> dict[str, dict[str, Any]]:
     """从数据库读取书城 seed package 的索引。"""
     with db_connection() as conn, conn.cursor(row_factory=psycopg_module.rows.dict_row) as cur:
         cur.execute(
             """
-            SELECT id, meta_json, updated_at, status, package_status
+            SELECT id, meta_json, package_json, updated_at, status, package_status
             FROM story_sessions
             WHERE kind = 'library_seed_package' AND user_id = %s
             ORDER BY updated_at DESC
@@ -87,8 +88,11 @@ def load_library_seed_index_from_db(
     seed_map: dict[str, dict[str, Any]] = {}
     for row in rows:
         meta = row.get("meta_json") or {}
+        package = row.get("package_json") or {}
         opening_id = clean_model_text(meta.get("openingId", ""))
         if not opening_id or opening_id in seed_map:
+            continue
+        if int(package.get("version") or 0) != int(package_version):
             continue
         seed_map[opening_id] = {
             "id": row.get("id"),
@@ -105,12 +109,19 @@ def load_library_seed_index(
     psycopg_module: Any,
     library_seed_user_id: str,
     clean_model_text: Callable[[str], str],
+    package_version: int,
     sessions_path: Path,
     normalize_source_type: Callable[[Any], str],
 ) -> dict[str, dict[str, Any]]:
     """按当前存储模式读取书城 seed 索引。"""
     if use_database_storage:
-        return load_library_seed_index_from_db(db_connection, psycopg_module, library_seed_user_id, clean_model_text)
+        return load_library_seed_index_from_db(
+            db_connection,
+            psycopg_module,
+            library_seed_user_id,
+            clean_model_text,
+            package_version,
+        )
     sessions = load_sessions(False, db_connection, psycopg_module, sessions_path, normalize_source_type)
     seed_map: dict[str, dict[str, Any]] = {}
     for item in sessions:
@@ -120,6 +131,9 @@ def load_library_seed_index(
             continue
         opening_id = clean_model_text(item.get("meta", {}).get("openingId", ""))
         if not opening_id or opening_id in seed_map:
+            continue
+        package = item.get("package", {}) or {}
+        if int(package.get("version") or 0) != int(package_version):
             continue
         seed_map[opening_id] = {
             "id": item.get("id"),

@@ -123,6 +123,17 @@ export async function startLibraryStoryFromSeed(storyId, payload, requestOptions
   return postJson(`/api/library-stories/${storyId}/start-from-seed`, payload, "Library story start from seed failed", requestOptions);
 }
 
+export async function importLibraryStoryPackage(payload, requestOptions = {}) {
+  return postJson("/api/library-stories/import-package", payload, "Library story package import failed", requestOptions);
+}
+
+export async function deleteImportedLibraryStory(storyId, requestOptions = {}) {
+  return fetchJson(`/api/library-stories/${storyId}/imported`, {
+    method: "DELETE",
+    ...requestOptions
+  }, "Imported library story delete failed");
+}
+
 export async function generateCustomStorySession(payload, requestOptions = {}) {
   return postJson("/api/custom-stories/generate", payload, "Custom story generation failed", requestOptions);
 }
