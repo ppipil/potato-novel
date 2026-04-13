@@ -1,5 +1,4 @@
 <script setup>
-// 书架页是前端主入口：负责模板故事浏览、自定义开局、生成等待态，以及“我的自定义故事”本地缓存管理。
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import LoadingOverlay from "../components/LoadingOverlay.vue";

@@ -18,6 +18,6 @@ SecondMe OAuth requirements for this project are currently spread across the REA
 
 ## Impact
 
-- Affects [README.md](/Users/pipilu/Documents/Projects/potato-novel/README.md) and [docs/integrations/secondme.md](/Users/pipilu/Documents/Projects/potato-novel/docs/integrations/secondme.md) as the source documents for confirmed requirements.
+- Affects [README.md](/Users/pipilu/Documents/Projects/potato-novel/README.md), [SECONDME_SETUP.md](/Users/pipilu/Documents/Projects/potato-novel/SECONDME_SETUP.md), and [SECONDME_OAUTH_IMPLEMENTATION.md](/Users/pipilu/Documents/Projects/potato-novel/SECONDME_OAUTH_IMPLEMENTATION.md) as the source documents for confirmed requirements.
 - Affects backend auth endpoints in [backend/app/main.py](/Users/pipilu/Documents/Projects/potato-novel/backend/app/main.py) and session signing helpers in [backend/app/security.py](/Users/pipilu/Documents/Projects/potato-novel/backend/app/security.py).
 - Affects frontend routes and auth interactions in [frontend/src/routes.js](/Users/pipilu/Documents/Projects/potato-novel/frontend/src/routes.js), [frontend/src/views/CallbackPage.vue](/Users/pipilu/Documents/Projects/potato-novel/frontend/src/views/CallbackPage.vue), [frontend/src/views/HomePage.vue](/Users/pipilu/Documents/Projects/potato-novel/frontend/src/views/HomePage.vue), and [frontend/src/views/BookshelfPage.vue](/Users/pipilu/Documents/Projects/potato-novel/frontend/src/views/BookshelfPage.vue).

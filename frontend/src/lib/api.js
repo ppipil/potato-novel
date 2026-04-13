@@ -1,4 +1,3 @@
-// 前端 API 边界：统一处理鉴权请求、故事生成请求和错误归一化，避免页面直接拼 fetch 细节。
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || window.location.origin;
 const FRONTEND_DEBUG_KEY = "potato-novel-debug-frontend";
 

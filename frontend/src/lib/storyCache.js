@@ -1,4 +1,3 @@
-// 前端本地缓存边界：统一维护已保存故事、书城 seed 信息和自定义故事包的 localStorage 读写与去重。
 const STORIES_CACHE_KEY = "potato-novel-stories-cache-v1";
 const LIBRARY_SESSION_CACHE_KEY = "potato-novel-library-session-cache-v1";
 const LIBRARY_STORIES_CACHE_KEY = "potato-novel-library-stories";

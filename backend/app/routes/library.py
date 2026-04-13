@@ -108,26 +108,6 @@ def create_library_router(deps: SimpleNamespace) -> APIRouter:
         result = deps.import_library_story_package(server_session, body)
         return JSONResponse({"ok": True, **result})
 
-    @router.post("/api/library-workbench/ai-complete-node")
-    async def ai_complete_library_workbench_node(request: Request) -> JSONResponse:
-        """为隐藏工作台的单节点生成正文/选项，便于继续人工编辑。"""
-        deps.require_env()
-        server_session = deps.get_server_session(request)
-        deps.require_library_workbench_operator(server_session)
-        body = await request.json()
-        result = await deps.ai_complete_workbench_node(server_session, body)
-        return JSONResponse({"ok": True, **result})
-
-    @router.post("/api/library-workbench/ai-parse-outline")
-    async def ai_parse_library_workbench_outline(request: Request) -> JSONResponse:
-        """把用户输入的大纲自动解析为工作台节点图。"""
-        deps.require_env()
-        server_session = deps.get_server_session(request)
-        deps.require_library_workbench_operator(server_session)
-        body = await request.json()
-        result = await deps.ai_parse_workbench_outline(server_session, body)
-        return JSONResponse({"ok": True, **result})
-
     @router.delete("/api/library-stories/{story_id}/imported")
     async def delete_imported_library_story(story_id: str, request: Request) -> JSONResponse:
         """删除一个导入的书市故事与对应 seed。"""
