@@ -30,6 +30,7 @@ const saveMessage = ref("");
 const loading = ref(true);
 const loadingLabel = ref("正在进入故事...");
 const syncingSave = ref(false);
+const saveState = ref("idle");
 const choosingOption = ref(false);
 const finalizedPayload = ref(null);
 const currentIndex = ref(-1);
@@ -39,6 +40,7 @@ const optimisticSavedStoryId = ref("");
 const storyScrollContainer = ref(null);
 const storyBottomAnchor = ref(null);
 const choiceDock = ref(null);
+const choiceDockVisible = ref(false);
 let choiceAudioContext = null;
 let choiceFlipStreak = 0;
 let choiceFlipResetTimer = 0;
@@ -117,7 +119,28 @@ const isGuestSession = computed(() => {
   const sessionUserId = String(session.value?.userId || "");
   return sessionUserId === "__guest_local__";
 });
-const canSave = computed(() => isSessionComplete.value && !syncingSave.value);
+const canRetryCloudSync = computed(() => saveState.value === "local-only" && !isGuestSession.value);
+const canResumeCloudSync = computed(() => saveState.value === "pending" && !isGuestSession.value);
+const canSave = computed(() =>
+  isSessionComplete.value &&
+  !syncingSave.value &&
+  (saveState.value === "idle" || canResumeCloudSync.value || canRetryCloudSync.value)
+);
+const saveButtonLabel = computed(() => {
+  if (syncingSave.value) {
+    return "同步中";
+  }
+  if (saveState.value === "synced") {
+    return "已保存";
+  }
+  if (saveState.value === "pending") {
+    return "待同步";
+  }
+  if (saveState.value === "local-only") {
+    return "重试同步";
+  }
+  return isSessionComplete.value ? "保存书架" : "未完待续";
+});
 const canRequestEndingAnalysis = computed(() =>
   Boolean(session.value?.id) &&
   isSessionComplete.value &&
@@ -262,9 +285,17 @@ function normalizeRelationshipState(relationship = {}) {
     toNumber(relationship?.["好感"], 0) +
     toNumber(relationship?.["信任"], 0) -
     toNumber(relationship?.["警惕"], 0);
-  return {
-    favor: toNumber(relationship?.favor, legacyFavor)
-  };
+  const normalized = {};
+  if (relationship && typeof relationship === "object") {
+    Object.entries(relationship).forEach(([key, value]) => {
+      const numeric = Number(value);
+      if (Number.isFinite(numeric)) {
+        normalized[key] = numeric;
+      }
+    });
+  }
+  normalized.favor = toNumber(normalized.favor, toNumber(relationship?.favor, legacyFavor));
+  return normalized;
 }
 
 function normalizePersonaState(persona = {}) {
@@ -287,11 +318,31 @@ function normalizeChoiceEffects(effects = {}) {
     : toNumber(relationshipEffects?.["好感"], 0) +
       toNumber(relationshipEffects?.["信任"], 0) -
       toNumber(relationshipEffects?.["警惕"], 0);
+  const normalizedRelationship = {};
+  if (relationshipEffects && typeof relationshipEffects === "object") {
+    Object.entries(relationshipEffects).forEach(([key, value]) => {
+      const numeric = Number(value);
+      if (Number.isFinite(numeric)) {
+        normalizedRelationship[key] = numeric;
+      }
+    });
+  }
+  const normalizedPersona = {};
+  if (personaEffects && typeof personaEffects === "object") {
+    Object.entries(personaEffects).forEach(([key, value]) => {
+      const numeric = Number(value);
+      if (Number.isFinite(numeric)) {
+        normalizedPersona[key] = numeric;
+      }
+    });
+  }
   return {
     relationship: {
+      ...normalizedRelationship,
       favor: favorDelta
     },
     persona: {
+      ...normalizedPersona,
       extrovert_introvert:
         toNumber(personaEffects.extrovert_introvert, 0) +
         toNumber(personaEffects?.["胆量"], 0) -
@@ -331,6 +382,7 @@ onMounted(async () => {
     logStoryGenerationDebug(transferredSession, "transferred-session");
     runtime.value = restoreRuntime(transferredSession, transferredSession.runtime);
     persistLocalSession();
+    restoreSaveStateFromCache();
     loading.value = false;
     return;
   }
@@ -350,6 +402,7 @@ onMounted(async () => {
     session.value = storedSession;
     runtime.value = restoreRuntime(storedSession, storedSession.runtime);
     persistLocalSession();
+    restoreSaveStateFromCache();
     loading.value = false;
 
   } catch (err) {
@@ -368,18 +421,17 @@ onUnmounted(() => {
 });
 
 watch(
-  () => runtime.value?.currentNodeId,
+  () => session.value?.id,
   () => {
-    if (!loading.value) {
-      scrollStoryToBottom("smooth");
-    }
+    restoreSaveStateFromCache();
   }
 );
 
 watch(
-  () => choiceList.value.length,
+  () => runtime.value?.currentNodeId,
   () => {
-    if (!loading.value && choiceList.value.length > 0) {
+    choiceDockVisible.value = false;
+    if (!loading.value) {
       scrollStoryToBottom("smooth");
     }
   }
@@ -391,7 +443,16 @@ watch(
     if (!complete || loading.value || isSessionComplete.value || !currentNodeLoaded.value) {
       return;
     }
-    // 选项区真正可见时再补一次滚动，避免只在 choiceList 变化时触发过早
+    void revealChoiceDock();
+  }
+);
+
+watch(
+  () => choiceDockVisible.value,
+  (visible) => {
+    if (!visible || loading.value || isSessionComplete.value) {
+      return;
+    }
     scrollStoryToBottom("smooth");
     void nextTick(() => {
       if (choiceDock.value && typeof choiceDock.value.scrollIntoView === "function") {
@@ -419,7 +480,10 @@ function buildNodeEntries(node) {
   if (!node) {
     return [];
   }
-  return [{ turn: node.turn, label: node.stageLabel, text: node.scene }];
+  return [
+    { turn: node.turn, label: node.stageLabel, text: node.scene },
+    ...(node.directorNote ? [{ turn: node.turn, label: "局势提示", text: node.directorNote }] : [])
+  ];
 }
 
 function cloneValue(value) {
@@ -783,12 +847,52 @@ function buildOptimisticSavedStory(finalized) {
   };
 }
 
+function restoreSaveStateFromCache() {
+  const sessionId = String(session.value?.id || "");
+  const userId = currentUserId.value;
+  if (!sessionId || !userId) {
+    saveState.value = "idle";
+    return;
+  }
+  try {
+    const raw = localStorage.getItem("potato-novel-stories-cache-v1");
+    if (!raw) {
+      saveState.value = "idle";
+      return;
+    }
+    const parsed = JSON.parse(raw);
+    const stories = Array.isArray(parsed?.[userId]) ? parsed[userId] : [];
+    const matched = stories.find((item) => String(item?.meta?.sessionId || "") === sessionId);
+    if (!matched) {
+      saveState.value = "idle";
+      return;
+    }
+    const syncStatus = String(matched?.meta?.syncStatus || "");
+    if (syncStatus === "pending" || syncStatus === "local-only" || syncStatus === "synced") {
+      saveState.value = syncStatus;
+      return;
+    }
+    saveState.value = "synced";
+  } catch {
+    saveState.value = "idle";
+  }
+}
+
 function revealNextParagraph() {
   if (currentParagraphs.value.length === 0 || isRevealComplete.value) {
     return;
   }
   currentIndex.value += 1;
   scrollStoryToBottom();
+}
+
+async function revealChoiceDock() {
+  if (choiceDockVisible.value || choiceList.value.length === 0) {
+    return;
+  }
+  await nextTick();
+  await new Promise((resolve) => window.requestAnimationFrame(resolve));
+  choiceDockVisible.value = true;
 }
 
 function scrollStoryToBottom(behavior = "smooth") {
@@ -860,6 +964,7 @@ async function chooseOption(choice) {
       };
     }
     currentIndex.value = -1;
+    choiceDockVisible.value = false;
     persistLocalSession();
     scrollStoryToBottom("auto");
   } catch (err) {
@@ -884,13 +989,16 @@ async function handleSave() {
       role: session.value?.meta?.role || "",
       author: session.value?.meta?.author || "SecondMe 用户",
       turnCount: runtime.value?.path?.length + 1 || 1,
-      endingAnalysis: endingAnalysis.value || null
+      endingAnalysis: endingAnalysis.value || null,
+      sessionId: session.value?.id || "",
+      syncStatus: isGuestSession.value ? "local-only" : "pending"
     },
     story: buildOptimisticStoryText()
   });
   optimisticSavedStoryId.value = optimisticStory.id;
   upsertStoryCache(optimisticStory.userId, optimisticStory);
-  saveMessage.value = `已加入书架，正在同步云端，共记录 ${optimisticStory.meta.turnCount || runtime.value.path.length + 1} 个回合。`;
+  saveMessage.value = `已保存到书架，共记录 ${optimisticStory.meta.turnCount || runtime.value.path.length + 1} 个回合。`;
+  saveState.value = isGuestSession.value ? "local-only" : "pending";
   sessionStorage.setItem(OPEN_SHELF_TAB_KEY, "mine");
   sessionStorage.removeItem("potato-novel-open-mine-tab");
   session.value = {
@@ -899,11 +1007,11 @@ async function handleSave() {
     completedRun: completedRun
   };
   persistLocalSession();
+  syncingSave.value = false;
 
   void (async () => {
     if (isGuestSession.value) {
       saveMessage.value = `已保存到本地书架，共记录 ${optimisticStory.meta.turnCount || runtime.value.path.length + 1} 个回合。`;
-      syncingSave.value = false;
       return;
     }
     try {
@@ -925,16 +1033,31 @@ async function handleSave() {
         story: finalized.story,
         meta: {
           ...finalized.meta,
+          sessionId: session.value?.id || "",
           endingAnalysis: endingAnalysis.value || finalized.meta?.endingAnalysis || null
         }
       });
-      upsertStoryCache(result.story?.userId, result.story);
-      saveMessage.value = `已保存，共记录 ${result.story.meta.turnCount || finalized.meta.turnCount || runtime.value.path.length + 1} 个回合。`;
+      const syncedStory = {
+        ...result.story,
+        meta: {
+          ...(result.story?.meta || {}),
+          syncStatus: "synced"
+        }
+      };
+      upsertStoryCache(syncedStory.userId, syncedStory);
+      saveMessage.value = `已保存，云端同步完成，共记录 ${result.story.meta.turnCount || finalized.meta.turnCount || runtime.value.path.length + 1} 个回合。`;
+      saveState.value = "synced";
     } catch (err) {
       saveMessage.value = "已加入本地书架，但云端同步失败，请稍后重试。";
       error.value = err instanceof Error ? err.message : "保存失败";
-    } finally {
-      syncingSave.value = false;
+      upsertStoryCache(optimisticStory.userId, {
+        ...optimisticStory,
+        meta: {
+          ...(optimisticStory.meta || {}),
+          syncStatus: "local-only"
+        }
+      });
+      saveState.value = "local-only";
     }
   })();
 }
@@ -1091,7 +1214,7 @@ async function launchRecommendedUniverse(libraryStory) {
           :disabled="!canSave"
           @click="handleSave"
         >
-          {{ syncingSave ? "同步中" : isSessionComplete ? "保存书架" : "未完待续" }}
+          {{ saveButtonLabel }}
         </button>
           </div>
         </div>
@@ -1233,7 +1356,7 @@ async function launchRecommendedUniverse(libraryStory) {
 
         <footer
           ref="choiceDock"
-          v-if="currentNodeLoaded && isRevealComplete && !isSessionComplete"
+          v-if="currentNodeLoaded && isRevealComplete && !isSessionComplete && choiceDockVisible"
           class="glass-panel slide-up sticky bottom-0 z-20 border-t border-paper-200/70 px-4 pb-4 pt-3 safe-pb sm:px-5"
         >
           <div class="mx-auto max-w-md space-y-2.5">

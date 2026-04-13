@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Callable, Type
 
 from ..domain.story_package import choice_style
@@ -154,14 +155,16 @@ def normalize_story_node_content(
     except Exception as exc:
         if not isinstance(exc, http_exception_cls):
             raise
-        raise http_exception_cls(
-            status_code=400,
-            detail={
-                "message": "Story node JSON parse failed",
-                "body": raw_text,
-                "error": exc.detail if isinstance(exc.detail, dict) else str(exc.detail),
-            },
-        ) from exc
+        payload = _fallback_story_node_content_payload(raw_text, clean_model_text)
+        if payload is None:
+            raise http_exception_cls(
+                status_code=400,
+                detail={
+                    "message": "Story node JSON parse failed",
+                    "body": raw_text,
+                    "error": exc.detail if isinstance(exc.detail, dict) else str(exc.detail),
+                },
+            ) from exc
     scene = clean_model_text(payload.get("scene", ""))
     if not scene:
         raise http_exception_cls(status_code=400, detail={"message": "Story node scene is missing", "body": raw_text})
@@ -174,6 +177,71 @@ def normalize_story_node_content(
         "scene": scene,
         "paragraphs": split_scene_into_paragraphs(scene),
         "summary": summary,
+    }
+
+
+def _fallback_story_node_content_payload(
+    raw_text: str,
+    clean_model_text: Callable[[str], str],
+) -> dict[str, str] | None:
+    """当节点正文没返回合法 JSON 时，尽量从半结构化文本里抢救出可用正文。"""
+    cleaned = str(raw_text or "").strip()
+    if not cleaned:
+        return None
+
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`")
+        cleaned = cleaned.replace("json", "", 1).strip()
+
+    stage_label = ""
+    director_note = ""
+    summary = ""
+    scene_lines: list[str] = []
+
+    for raw_line in cleaned.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        normalized = line.replace("：", ":")
+        lower = normalized.lower()
+        if lower.startswith("stagelabel:"):
+            stage_label = clean_model_text(normalized.split(":", 1)[1])
+            continue
+        if lower.startswith("directornote:"):
+            director_note = clean_model_text(normalized.split(":", 1)[1])
+            continue
+        if lower.startswith("summary:"):
+            summary = clean_model_text(normalized.split(":", 1)[1])
+            continue
+        if lower.startswith("scene:"):
+            scene_lines.append(clean_model_text(normalized.split(":", 1)[1]))
+            continue
+        if re.match(r"^(阶段标题|局势提示|摘要|正文)\s*:", normalized):
+            label, value = normalized.split(":", 1)
+            value = clean_model_text(value)
+            if "阶段标题" in label:
+                stage_label = value
+            elif "局势提示" in label:
+                director_note = value
+            elif "摘要" in label:
+                summary = value
+            elif "正文" in label:
+                scene_lines.append(value)
+            continue
+        scene_lines.append(line)
+
+    scene = clean_model_text("\n".join(scene_lines))
+    if not scene:
+        flat = clean_model_text(cleaned)
+        if len(flat) < 20:
+            return None
+        scene = flat
+
+    return {
+        "stageLabel": stage_label or "剧情推进",
+        "directorNote": director_note,
+        "summary": summary or scene,
+        "scene": scene,
     }
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from types import SimpleNamespace
 
@@ -29,16 +30,77 @@ def create_sessions_router(deps: SimpleNamespace) -> APIRouter:
         """根据自定义 opening 生成一条新的故事会话。"""
         deps.require_env()
         server_session = deps.get_server_or_guest_session(request)
+        started_at = time.time()
         body = await request.json()
         opening = deps.clean_model_text(body.get("opening", ""))
+        style_guidance = deps.clean_model_text(body.get("styleGuidance", ""))
         role = deps.clean_model_text(body.get("role", "")) or "主人公"
         if not opening:
             raise HTTPException(status_code=400, detail="Missing opening")
-        session_record, reused = await deps.start_or_generate_custom_story(
-            server_session,
-            opening=opening,
-            role=role,
-            force_regenerate=bool(body.get("forceRegenerate")),
+        trace_id = f"custom-{int(started_at * 1000)}"
+        print(
+            "[custom-story-route-start]",
+            json.dumps(
+                {
+                    "traceId": trace_id,
+                    "userId": server_session.get("user", {}).get("userId", ""),
+                    "openingPreview": opening[:80],
+                    "hasStyleGuidance": bool(style_guidance),
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+        try:
+            session_record, reused = await deps.start_or_generate_custom_story(
+                server_session,
+                opening=opening,
+                role=role,
+                style_guidance=style_guidance,
+                force_regenerate=bool(body.get("forceRegenerate")),
+            )
+        except HTTPException as exc:
+            print(
+                "[custom-story-route-failed]",
+                json.dumps(
+                    {
+                        "traceId": trace_id,
+                        "statusCode": exc.status_code,
+                        "elapsedMs": int((time.time() - started_at) * 1000),
+                        "detail": exc.detail,
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+            raise
+        except Exception as exc:
+            print(
+                "[custom-story-route-failed]",
+                json.dumps(
+                    {
+                        "traceId": trace_id,
+                        "statusCode": 500,
+                        "elapsedMs": int((time.time() - started_at) * 1000),
+                        "detail": repr(exc),
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+            raise
+        print(
+            "[custom-story-route-complete]",
+            json.dumps(
+                {
+                    "traceId": trace_id,
+                    "elapsedMs": int((time.time() - started_at) * 1000),
+                    "sessionId": session_record.get("id", ""),
+                    "reused": reused,
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
         )
         deps.ensure_story_package_runtime(session_record)
         return JSONResponse({"ok": True, "session": deps.serialize_session(session_record), "reused": reused})

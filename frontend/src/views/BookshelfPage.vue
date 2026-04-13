@@ -12,6 +12,7 @@ import {
   startLibraryStoryFromSeed
 } from "../lib/api";
 import {
+  deleteCustomPackageCache,
   readCustomPackagesCache,
   readLibrarySessionCache,
   readLibraryStoriesCache,
@@ -32,6 +33,7 @@ const activeShelfTab = ref("public");
 const openingMode = ref("custom");
 const selectedOpening = ref("");
 const customOpening = ref("");
+const customStyleGuidance = ref("");
 const selectedRole = ref("主人公");
 const stories = ref([]);
 const customPackages = ref([]);
@@ -68,6 +70,13 @@ let workbenchTapTimer = 0;
 let bookshelfMounted = true;
 const workbenchTapCount = ref(0);
 const showWorkbenchEntry = ref(false);
+const swipedCustomPackageId = ref("");
+const activeSwipeOffset = ref(0);
+const SWIPE_ACTION_WIDTH = 92;
+let customSwipeStartX = 0;
+let customSwipeTrackingId = "";
+let customSwipeMoved = false;
+let customSwipeBaseOffset = 0;
 
 const templateTags = ["悬疑惊悚", "都市言情", "无限流", "命运反转"];
 const coverTints = [
@@ -114,6 +123,7 @@ const customPackageCards = computed(() =>
     summary: String(item?.opening || "").slice(0, 60),
     tint: coverTints[index % coverTints.length],
     session: item?.session || null,
+    isCompleted: Boolean(item?.session?.completedRun || item?.session?.runtime?.status === "complete"),
   }))
 );
 
@@ -121,6 +131,57 @@ const activeOpening = computed(() => {
   return openingMode.value === "custom"
     ? customOpening.value.trim() || activeSeed.value || freeCreationSeeds[0]
     : selectedOpening.value;
+});
+
+const generationProgressMeta = computed(() => {
+  const elapsed = Number(generatingElapsedSec.value || 0);
+  if (generatingEntryMode.value === "library") {
+    if (elapsed < 20) {
+      return {
+        title: "正在检查模板剧情是否已经播种",
+        detail: "通常几秒内会有结果；如果是首次播种，可能进入较长生成。",
+      };
+    }
+    if (elapsed < 90) {
+      return {
+        title: "正在准备模板剧情内容",
+        detail: "若命中缓存会很快打开；首次播种常见要 1 到 3 分钟。",
+      };
+    }
+    if (elapsed < 300) {
+      return {
+        title: "正在生成完整模板故事包",
+        detail: "这是正常长耗时阶段，你可以继续浏览书市，准备好后再进入。",
+      };
+    }
+    return {
+      title: "这次模板生成已经明显偏慢",
+      detail: "如果超过 5 分钟还没结束，建议返回后稍后重试，或换一个模板先玩。",
+    };
+  }
+
+  if (elapsed < 20) {
+    return {
+      title: "正在整理你的开局设定",
+      detail: "先搭骨架再补正文，刚开始通常不会立刻返回。",
+    };
+  }
+  if (elapsed < 90) {
+    return {
+      title: "正在生成剧情骨架和正文",
+      detail: "自定义故事常见要几十秒到 2 分钟，取决于开局复杂度。",
+    };
+  }
+  if (elapsed < 240) {
+    return {
+      title: "正在补全后续分支和选项",
+      detail: "这是较慢但正常的阶段；你可以继续逛书架，不用一直盯着等。",
+    };
+  }
+  return {
+    title: "这次自定义生成已经明显偏慢",
+    detail: "如果超过 4 分钟还没有结果，大概率是链路卡住了，建议稍后重试。",
+  };
 });
 
 const packageStatusText = computed(() => {
@@ -251,7 +312,7 @@ function unlockWorkbenchEntry() {
   } catch {
     // ignore localStorage failures
   }
-  tipMessage.value = "已解锁隐藏入口：导入工作台";
+  tipMessage.value = "已解锁隐藏入口：隐藏工作台";
 }
 
 function handleMarketTitleSecretTap() {
@@ -559,7 +620,11 @@ function debugCache(event, payload) {
 
 function cloneValue(value) {
   if (typeof structuredClone === "function") {
-    return structuredClone(value);
+    try {
+      return structuredClone(value);
+    } catch {
+      // 某些运行时对象会混入不可 clone 的引用；这里退回 JSON 语义即可满足会话重建需求。
+    }
   }
   return JSON.parse(JSON.stringify(value));
 }
@@ -595,6 +660,48 @@ function buildLocalSessionFromCachedLibrary(openingId, cachedEntry, role) {
     summary: rootNode.kind === "ending" ? (rootNode.summary || rootNode.scene || "") : ""
   };
   return nextSession;
+}
+
+function buildReplayableCustomSession(sessionPayload) {
+  if (!sessionPayload?.package?.rootNodeId) {
+    return null;
+  }
+  const serializedPackage = cloneValue(sessionPayload.package);
+  const serializedMeta = cloneValue(sessionPayload.meta || {});
+  const rootNode = (serializedPackage?.nodes || []).find((item) => item.id === serializedPackage?.rootNodeId);
+  if (!rootNode) {
+    return null;
+  }
+  return {
+    id: `replay-${sessionPayload.id || Date.now()}-${Date.now()}`,
+    kind: sessionPayload.kind || "story_package",
+    status: "ready",
+    sourceType: sessionPayload.sourceType || serializedMeta?.sourceType || "custom",
+    packageStatus: "ready",
+    userId: sessionPayload.userId || "",
+    user: cloneValue(sessionPayload.user || {}),
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    completedRun: null,
+    meta: {
+      ...serializedMeta,
+      shelfEntryId: serializedMeta?.shelfEntryId || sessionPayload.id || "",
+      replayOf: sessionPayload.id || "",
+    },
+    package: serializedPackage,
+    runtime: {
+      currentNodeId: rootNode.id,
+      entries: [
+        { turn: rootNode.turn, label: rootNode.stageLabel, text: rootNode.scene },
+        ...(rootNode.directorNote ? [{ turn: rootNode.turn, label: "局势提示", text: rootNode.directorNote }] : [])
+      ],
+      path: [],
+      state: cloneValue(serializedPackage?.initialState || {}),
+      status: rootNode.kind === "ending" ? "complete" : "ongoing",
+      endingNodeId: rootNode.kind === "ending" ? rootNode.id : "",
+      summary: rootNode.kind === "ending" ? (rootNode.summary || rootNode.scene || "") : ""
+    }
+  };
 }
 
 function clearStoryDeleteTimer() {
@@ -738,25 +845,63 @@ function mergeStoryShelf(localStories, remoteStories) {
       merged.push(localItem);
     }
   }
-  return merged.filter((item, index, arr) => arr.findIndex((row) => row?.id === item?.id) === index);
+  const seenIds = new Set();
+  const seenSessions = new Set();
+  return merged.filter((item) => {
+    const itemId = item?.id || "";
+    const sessionId = String(item?.meta?.sessionId || "");
+    if (itemId && seenIds.has(itemId)) {
+      return false;
+    }
+    if (sessionId && seenSessions.has(sessionId)) {
+      return false;
+    }
+    if (itemId) {
+      seenIds.add(itemId);
+    }
+    if (sessionId) {
+      seenSessions.add(sessionId);
+    }
+    return true;
+  });
 }
 
 function normalizeGenerationError(err) {
   const message = err instanceof Error ? err.message : String(err || "");
+  const code = err?.code || "";
+  const status = Number(err?.status || 0);
   if (!message) {
-    return "进入故事失败，请稍后重试。";
+    if (code === "SERVER_ERROR" || status >= 500) {
+      return "生成失败了，但服务端这次没有返回明确报错。请看后端日志里的 [custom-story-failed] 或 [story-package-progress]。";
+    }
+    return "生成失败了，但这次没有拿到明确错误信息。请稍后重试。";
   }
-  if (message.includes("Failed to fetch") || message.includes("NetworkError") || message.includes("网络")) {
+  if (code === "TIMEOUT" || message.includes("超时")) {
+    return `${message} 你可以先继续逛书架，稍后再重试。`;
+  }
+  if (code === "NETWORK_ERROR" || message.includes("Failed to fetch") || message.includes("NetworkError") || message.includes("网络")) {
     return "网络连接不稳定，故事暂时没连上。请检查网络后重试。";
   }
-  if (message.includes("超时")) {
-    return `${message} 你可以先浏览书架，稍后再试。`;
+  if (code === "SERVER_ERROR" || status >= 500) {
+    return `故事生成服务刚刚没有接住这次请求：${message}`;
   }
   return message;
 }
 
 function openCustomPackage(item) {
-  const sessionPayload = item?.session;
+  if (customSwipeMoved) {
+    customSwipeMoved = false;
+    return;
+  }
+  if (swipedCustomPackageId.value && swipedCustomPackageId.value === item?.id) {
+    swipedCustomPackageId.value = "";
+    activeSwipeOffset.value = 0;
+    return;
+  }
+  const originalSession = item?.session;
+  const sessionPayload = item?.isCompleted
+    ? buildReplayableCustomSession(originalSession)
+    : originalSession;
   if (!sessionPayload?.id) {
     return;
   }
@@ -770,6 +915,112 @@ function openCustomPackage(item) {
       fromTab: "mine",
     }
   });
+}
+
+function customPackageTransform(itemId) {
+  if (swipedCustomPackageId.value === itemId) {
+    return `translateX(${activeSwipeOffset.value}px)`;
+  }
+  return "translateX(0px)";
+}
+
+function showCustomPackageDelete(itemId) {
+  return swipedCustomPackageId.value === itemId && activeSwipeOffset.value <= -12;
+}
+
+function beginCustomPackageSwipe(itemId, clientX) {
+  customSwipeStartX = clientX;
+  customSwipeTrackingId = itemId;
+  customSwipeMoved = false;
+  customSwipeBaseOffset = swipedCustomPackageId.value === itemId ? activeSwipeOffset.value : 0;
+  if (swipedCustomPackageId.value !== itemId) {
+    swipedCustomPackageId.value = itemId;
+    activeSwipeOffset.value = 0;
+  }
+}
+
+function updateCustomPackageSwipe(itemId, clientX) {
+  if (customSwipeTrackingId !== itemId) {
+    return;
+  }
+  const deltaX = clientX - customSwipeStartX;
+  const nextOffset = customSwipeBaseOffset + deltaX;
+  if (Math.abs(deltaX) > 6) {
+    customSwipeMoved = true;
+  }
+  activeSwipeOffset.value = Math.max(-SWIPE_ACTION_WIDTH, Math.min(0, nextOffset));
+}
+
+function endCustomPackageSwipe(itemId) {
+  if (customSwipeTrackingId !== itemId) {
+    return;
+  }
+  customSwipeTrackingId = "";
+  customSwipeBaseOffset = 0;
+  if (activeSwipeOffset.value <= -(SWIPE_ACTION_WIDTH / 2)) {
+    swipedCustomPackageId.value = itemId;
+    activeSwipeOffset.value = -SWIPE_ACTION_WIDTH;
+    return;
+  }
+  swipedCustomPackageId.value = "";
+  activeSwipeOffset.value = 0;
+}
+
+function handleCustomPackageTouchStart(itemId, event) {
+  const touch = event.touches?.[0];
+  if (!touch) {
+    return;
+  }
+  beginCustomPackageSwipe(itemId, touch.clientX);
+}
+
+function handleCustomPackageTouchMove(itemId, event) {
+  const touch = event.touches?.[0];
+  if (!touch) {
+    return;
+  }
+  updateCustomPackageSwipe(itemId, touch.clientX);
+}
+
+function handleCustomPackageTouchEnd(itemId) {
+  endCustomPackageSwipe(itemId);
+}
+
+function handleCustomPackagePointerDown(itemId, event) {
+  if (event.pointerType === "touch") {
+    return;
+  }
+  beginCustomPackageSwipe(itemId, event.clientX);
+}
+
+function handleCustomPackagePointerMove(itemId, event) {
+  if (event.pointerType === "touch" || customSwipeTrackingId !== itemId) {
+    return;
+  }
+  updateCustomPackageSwipe(itemId, event.clientX);
+}
+
+function handleCustomPackagePointerEnd(itemId, event) {
+  if (event.pointerType === "touch") {
+    return;
+  }
+  endCustomPackageSwipe(itemId);
+}
+
+function closeCustomPackageSwipe() {
+  swipedCustomPackageId.value = "";
+  activeSwipeOffset.value = 0;
+  customSwipeTrackingId = "";
+  customSwipeBaseOffset = 0;
+}
+
+function deleteCustomPackage(item) {
+  if (!item?.id) {
+    return;
+  }
+  deleteCustomPackageCache(effectiveUserId.value, item.id);
+  customPackages.value = readCustomPackagesCache(effectiveUserId.value);
+  closeCustomPackageSwipe();
 }
 
 async function handleGenerate(openingOverride = "") {
@@ -855,7 +1106,8 @@ async function handleGenerate(openingOverride = "") {
       result = await withTimeout(
         (requestOptions) => generateCustomStorySession({
           opening: openingToUse,
-          role: selectedRole.value
+          role: selectedRole.value,
+          styleGuidance: customStyleGuidance.value.trim()
         }, requestOptions),
         300000,
         "自定义故事生成超时（当前链路可能需要数分钟）。"
@@ -922,6 +1174,15 @@ async function handleGenerate(openingOverride = "") {
       }
     });
   } catch (err) {
+    console.error("[potato-generate-failed]", {
+      opening: openingToUse,
+      entryMode: generatingEntryMode.value,
+      elapsedSec: generatingElapsedSec.value,
+      error: err,
+      message: err instanceof Error ? err.message : String(err || ""),
+      code: err?.code || "",
+      status: err?.status || 0,
+    });
     error.value = normalizeGenerationError(err);
   } finally {
     sessionStorage.removeItem(BACKGROUND_PENDING_KEY);
@@ -1116,12 +1377,20 @@ function formatBookCoverTitle(opening) {
                 @input="handleCustomInput"
               />
 
+              <input
+                v-model="customStyleGuidance"
+                class="w-full rounded-[18px] border border-paper-200 bg-white/92 px-4 py-3 text-sm text-paper-900 placeholder:text-paper-700/35"
+                type="text"
+                placeholder="可选：补一句你想要的风格或走向，比如“恐怖压迫感”“荒诞搞笑”“慢热拉扯”"
+                @input="handleCustomInput"
+              />
+
               <div
                 v-if="generating && generatingEntryMode === 'custom'"
                 class="px-0.5 py-0.5"
               >
-                <p class="text-[0.8rem] font-semibold text-amber-700">{{ generatingLabel }}</p>
-                <p class="text-[0.68rem] text-amber-700/76">已等待 {{ generatingElapsedSec }}s · 你可以继续浏览书城</p>
+                <p class="text-[0.8rem] font-semibold text-amber-700">{{ generationProgressMeta.title }}</p>
+                <p class="text-[0.68rem] text-amber-700/76">已等待 {{ generatingElapsedSec }}s · {{ generationProgressMeta.detail }}</p>
               </div>
 
               <div class="space-y-3">
@@ -1166,28 +1435,52 @@ function formatBookCoverTitle(opening) {
 
           <div class="space-y-4 pt-2">
             <div class="flex items-end justify-between">
-              <h3 class="font-serif text-[1.45rem] font-semibold text-paper-900">进行中的故事</h3>
-              <p class="text-xs tracking-[0.08em] text-paper-700/58">可继续交互</p>
+              <h3 class="font-serif text-[1.45rem] font-semibold text-paper-900">我的自定义故事</h3>
+              <p class="text-xs tracking-[0.08em] text-paper-700/58">保留你创作过的互动包</p>
             </div>
             <div v-if="customPackageCards.length" class="space-y-3">
-              <button
+              <div
                 v-for="(item, index) in customPackageCards"
                 :key="item.id"
-                class="paper-card active-press grid grid-cols-[1fr_7.2rem] overflow-hidden text-left"
-                @click="openCustomPackage(item)"
+                class="relative overflow-hidden rounded-[28px]"
               >
-                <div class="space-y-2 px-4 py-4">
-                  <span class="inline-flex rounded-xl bg-paper-100 px-3 py-1 text-[0.7rem] font-semibold text-paper-700">互动包</span>
-                  <p class="font-serif text-[1.15rem] font-semibold leading-tight text-paper-900">{{ item.title }}</p>
-                  <p class="line-clamp-2 text-sm leading-6 text-paper-700/80">{{ item.summary || "继续进入这段正在生长的宇宙。" }}</p>
+                <div
+                  v-if="showCustomPackageDelete(item.id)"
+                  class="absolute inset-y-0 right-0 flex w-[92px] items-stretch justify-end"
+                >
+                  <button
+                    class="flex w-[92px] items-center justify-center rounded-[28px] bg-[#d94f45] px-4 text-sm font-semibold tracking-[0.08em] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.16)]"
+                    @click.stop="deleteCustomPackage(item)"
+                  >
+                    删除
+                  </button>
                 </div>
-                <div class="relative min-h-full">
-                  <div class="absolute inset-0" :class="item.tint"></div>
-                  <div class="absolute inset-x-0 bottom-0 bg-black/28 px-2 py-2 text-right text-[0.62rem] font-semibold tracking-[0.08em] text-white/90">
-                    继续互动
+                <button
+                  class="paper-card active-press relative z-[1] grid w-full grid-cols-[1fr_7.2rem] overflow-hidden text-left transition-transform duration-200"
+                  :style="{ transform: customPackageTransform(item.id), touchAction: 'pan-y' }"
+                  @click="openCustomPackage(item)"
+                  @pointerdown="handleCustomPackagePointerDown(item.id, $event)"
+                  @pointermove="handleCustomPackagePointerMove(item.id, $event)"
+                  @pointerup="handleCustomPackagePointerEnd(item.id, $event)"
+                  @pointercancel="handleCustomPackagePointerEnd(item.id, $event)"
+                  @touchstart.passive="handleCustomPackageTouchStart(item.id, $event)"
+                  @touchmove.stop.prevent="handleCustomPackageTouchMove(item.id, $event)"
+                  @touchend="handleCustomPackageTouchEnd(item.id)"
+                  @touchcancel="handleCustomPackageTouchEnd(item.id)"
+                >
+                  <div class="space-y-2 px-4 py-4">
+                    <span class="inline-flex rounded-xl bg-paper-100 px-3 py-1 text-[0.7rem] font-semibold text-paper-700">互动包</span>
+                    <p class="font-serif text-[1.15rem] font-semibold leading-tight text-paper-900">{{ item.title }}</p>
+                    <p class="line-clamp-2 text-sm leading-6 text-paper-700/80">{{ item.summary || "继续进入这段正在生长的宇宙。" }}</p>
                   </div>
-                </div>
-              </button>
+                  <div class="relative min-h-full">
+                    <div class="absolute inset-0" :class="item.tint"></div>
+                    <div class="absolute inset-x-0 bottom-0 bg-black/28 px-2 py-2 text-right text-[0.62rem] font-semibold tracking-[0.08em] text-white/90">
+                      {{ item.isCompleted ? "重新开始" : "继续互动" }}
+                    </div>
+                  </div>
+                </button>
+              </div>
             </div>
             <div
               v-else
@@ -1204,8 +1497,8 @@ function formatBookCoverTitle(opening) {
               v-if="generating && generatingEntryMode === 'library'"
               class="rounded-xl border border-amber-200 bg-amber-50/85 px-3 py-2"
             >
-              <p class="text-[0.8rem] font-semibold text-amber-700">{{ generatingLabel }}</p>
-              <p class="text-[0.68rem] text-amber-700/76">已等待 {{ generatingElapsedSec }}s · 你可以继续浏览书市</p>
+              <p class="text-[0.8rem] font-semibold text-amber-700">{{ generationProgressMeta.title }}</p>
+              <p class="text-[0.68rem] text-amber-700/76">已等待 {{ generatingElapsedSec }}s · {{ generationProgressMeta.detail }}</p>
             </div>
 
             <div class="flex items-end justify-between">
@@ -1216,7 +1509,7 @@ function formatBookCoverTitle(opening) {
                   class="active-press rounded-full border border-paper-300 bg-white/80 px-3 py-2 text-[0.68rem] font-semibold tracking-[0.08em] text-paper-700"
                   @click="router.push('/workbench/library-import')"
                 >
-                  导入工作台
+                  隐藏工作台
                 </button>
                 <button
                   class="active-press rounded-full border border-paper-300 bg-white/80 px-4 py-2 text-xs font-semibold tracking-[0.08em] text-paper-700"

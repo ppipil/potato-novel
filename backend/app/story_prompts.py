@@ -1,3 +1,5 @@
+"""故事提示词模块，负责旧链路与整包生成链路的 prompt 组合。"""
+
 from __future__ import annotations
 
 import json
@@ -122,13 +124,20 @@ def _compose_story_package_prompt(
     role: str,
     user_name: str,
     persona_profile: dict[str, Any],
+    style_guidance: str = "",
     repair_hint: str = "",
 ) -> str:
     """组合单次整包生成故事包的完整 prompt。"""
     preferred = "、".join(persona_profile.get("preferredStyles", [])) or "真诚、试探、撩拨"
+    style_instruction = (
+        f"额外创作约束：{style_guidance}\n"
+        if str(style_guidance or "").strip()
+        else ""
+    )
     return (
         f"{_build_json_story_package_instruction(repair_hint)}\n\n"
         f"故事开头：{opening}\n"
+        f"{style_instruction}"
         f"用户偏好人设：{persona_profile.get('label', '未知分身')}，偏好风格：{preferred}\n"
         "生成要求："
         "整个故事包要有清晰开端、升温、反转、收束；"
