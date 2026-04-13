@@ -17,6 +17,7 @@ async def create_or_reuse_story_package(
     """按 opening 类型选择 library 或 custom 的故事会话开局链路。"""
     opening = clean_model_text(body.get("opening", ""))
     role = clean_model_text(body.get("role", ""))
+    style_guidance = clean_model_text(body.get("styleGuidance", ""))
     if not opening or not role:
         raise http_exception_cls(status_code=400, detail="Missing opening or role")
     if opening in preset_openings:
@@ -34,6 +35,7 @@ async def create_or_reuse_story_package(
         server_session,
         opening=opening,
         role=role,
+        style_guidance=style_guidance,
         force_regenerate=bool(body.get("forceRegenerate")),
     )
 

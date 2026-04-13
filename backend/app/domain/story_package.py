@@ -290,8 +290,8 @@ def story_package_validation_error(story_package: dict[str, Any], clean_model_te
     ending_nodes = [node for node in nodes if node.get("kind") == "ending"]
     if len(playable_nodes) < 2:
         return "Story package must contain at least 2 playable turn nodes"
-    if len(ending_nodes) != 3:
-        return "Story package must contain exactly 3 ending nodes"
+    if len(ending_nodes) < 3:
+        return "Story package must contain at least 3 ending nodes"
     path_depths: list[int] = []
     stack: list[tuple[str, int]] = [(root_node_id, 1)]
     visited_depth: set[tuple[str, int]] = set()
@@ -315,12 +315,12 @@ def story_package_validation_error(story_package: dict[str, Any], clean_model_te
             stack.append((next_node_id, next_depth))
     if not path_depths:
         return "No ending path depth found from rootNodeId"
-    if min(path_depths) < 2 or max(path_depths) > 4:
-        return "Each playable path must reach an ending after 2 to 4 turn nodes"
+    if min(path_depths) < 2 or max(path_depths) > 8:
+        return "Each playable path must reach an ending after 2 to 8 turn nodes"
     for node in playable_nodes:
         choices = node.get("choices", [])
-        if len(choices) != 3:
-            return f"Turn node {node.get('id', 'unknown')} must contain exactly 3 choices"
+        if len(choices) < 2 or len(choices) > 4:
+            return f"Turn node {node.get('id', 'unknown')} must contain 2 to 4 choices"
         for choice in choices:
             if not clean_model_text(choice.get("text", "")):
                 return f"Choice text is missing in node {node.get('id', 'unknown')}"
