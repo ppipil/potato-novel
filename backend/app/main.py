@@ -44,7 +44,6 @@ from .providers import (
     compose_story_node_prompt as _compose_story_node_prompt,
     compose_story_package_prompt as _compose_story_package_prompt,
     compose_story_prompt as _compose_story_prompt,
-    extract_json_object as _extract_json_object,
     has_volcengine_prose_provider as _has_volcengine_prose_provider,
     normalize_ending_analysis as _normalize_ending_analysis,
     normalize_story_node_choices as _provider_normalize_story_node_choices,
@@ -74,8 +73,6 @@ from .services.library_seed_service import require_library_seed_session
 from .services.library_seed_service import resolve_library_opening
 from .services.library_import_service import delete_imported_library_story as delete_imported_library_story_service
 from .services.library_import_service import import_library_story_package as import_library_story_package_service
-from .services.library_workbench_service import ai_complete_workbench_node as ai_complete_workbench_node_service
-from .services.library_workbench_service import ai_parse_workbench_outline as ai_parse_workbench_outline_service
 from .services.story_session_service import build_ending_analysis_context
 from .services.story_session_service import create_or_reuse_story_package
 from .services.story_runtime_service import ensure_story_package_runtime
@@ -1041,47 +1038,6 @@ def _build_story_package_session_payload(
     return session_record
 
 
-async def _ai_complete_workbench_node(server_session: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
-    """薄封装：隐藏工作台 AI 补写逻辑下沉到服务层。"""
-    return await ai_complete_workbench_node_service(
-        server_session=server_session,
-        body=body,
-        clean_model_text=_clean_model_text,
-        has_volcengine_prose_provider=_has_volcengine_prose_provider,
-        generate_story_node_choices=_generate_story_node_choices,
-        generate_story_node_content=_generate_story_node_content,
-        choice_style=_choice_style,
-        choice_tone=_choice_tone,
-        choice_effects=_choice_effects,
-        fallback_choice_by_index=_fallback_choice_by_index,
-        normalize_choice_effect_payload=_normalize_choice_effect_payload,
-        package_version=PACKAGE_VERSION,
-        template_package_generator=TEMPLATE_PACKAGE_GENERATOR,
-        http_exception_cls=HTTPException,
-    )
-
-
-async def _ai_parse_workbench_outline(server_session: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
-    """薄封装：把剧情大纲解析为工作台节点图。"""
-    return await ai_parse_workbench_outline_service(
-        server_session=server_session,
-        body=body,
-        clean_model_text=_clean_model_text,
-        has_volcengine_prose_provider=_has_volcengine_prose_provider,
-        call_volcengine_prose=_call_volcengine_prose,
-        call_secondme_act=_call_secondme_act,
-        extract_json_object=_extract_json_object,
-        choice_style=_choice_style,
-        choice_tone=_choice_tone,
-        choice_effects=_choice_effects,
-        fallback_choice_by_index=_fallback_choice_by_index,
-        normalize_choice_effect_payload=_normalize_choice_effect_payload,
-        package_version=PACKAGE_VERSION,
-        template_package_generator=TEMPLATE_PACKAGE_GENERATOR,
-        http_exception_cls=HTTPException,
-    )
-
-
 def _import_library_story_package(server_session: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
     """薄包装：把依赖装配后委托给导入服务层。"""
     return import_library_story_package_service(
@@ -1147,70 +1103,22 @@ async def _start_or_generate_custom_story(
     server_session: dict[str, Any],
     opening: str,
     role: str,
-    style_guidance: str = "",
     force_regenerate: bool = False,
 ) -> tuple[dict[str, Any], bool]:
     """为自定义开头生成一个前端本地游玩的故事 payload。"""
     if not _has_volcengine_prose_provider():
         raise HTTPException(status_code=500, detail="Doubao(Volcengine) is not configured for custom story generation")
 
-    started_at = time.perf_counter()
     user = server_session["user"]
     persona_profile = _derive_persona_profile(user)
-    generation_opening = (
-        f"{opening}\n\n额外创作约束：{style_guidance}"
-        if str(style_guidance or "").strip()
-        else opening
-    )
-    print(
-        "[custom-story-start]",
-        json.dumps(
-            {
-                "userId": user.get("userId", ""),
-                "role": role,
-                "openingPreview": opening[:80],
-                "hasStyleGuidance": bool(str(style_guidance or "").strip()),
-            },
-            ensure_ascii=False,
-        ),
-        flush=True,
-    )
-    try:
-        story_package = await _build_story_package_two_stage(
-            access_token=server_session["token"].get("access_token"),
-            opening=generation_opening,
-            role=role,
-            user_name=user.get("name") or "SecondMe 用户",
-            persona_profile=persona_profile,
-            choice_provider="volcengine",
-            prose_provider="volcengine",
-        )
-    except Exception as exc:
-        print(
-            "[custom-story-failed]",
-            json.dumps(
-                {
-                    "userId": user.get("userId", ""),
-                    "elapsedMs": int((time.perf_counter() - started_at) * 1000),
-                    "error": repr(exc),
-                },
-                ensure_ascii=False,
-            ),
-            flush=True,
-        )
-        raise
-    print(
-        "[custom-story-complete]",
-        json.dumps(
-            {
-                "userId": user.get("userId", ""),
-                "title": story_package.get("title", ""),
-                "nodeCount": len(story_package.get("nodes", []) or []),
-                "elapsedMs": int((time.perf_counter() - started_at) * 1000),
-            },
-            ensure_ascii=False,
-        ),
-        flush=True,
+    story_package = await _build_story_package_two_stage(
+        access_token=server_session["token"].get("access_token"),
+        opening=opening,
+        role=role,
+        user_name=user.get("name") or "SecondMe 用户",
+        persona_profile=persona_profile,
+        choice_provider="volcengine",
+        prose_provider="volcengine",
     )
     return (
         _build_story_package_session_payload(
@@ -1247,8 +1155,6 @@ def _mcp_error(request_id: Any, code: int, message: str) -> dict[str, Any]:
 
 
 ROUTE_DEPS = SimpleNamespace(
-    ai_complete_workbench_node=_ai_complete_workbench_node,
-    ai_parse_workbench_outline=_ai_parse_workbench_outline,
     build_library_story_rows=_build_library_story_rows,
     build_story_package_session_payload=_build_story_package_session_payload,
     call_secondme_chat=_call_secondme_chat,

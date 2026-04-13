@@ -37,50 +37,6 @@ function writeCustomPackagesMap(cacheMap) {
   localStorage.setItem(CUSTOM_PACKAGES_CACHE_KEY, JSON.stringify(cacheMap));
 }
 
-function customPackageEntryId(row) {
-  return String(
-    row?.id ||
-    row?.session?.meta?.shelfEntryId ||
-    row?.session?.meta?.replayOf ||
-    row?.session?.id ||
-    ""
-  );
-}
-
-function customPackageUpdatedAt(row) {
-  return Number(row?.updatedAt || row?.session?.updatedAt || row?.session?.createdAt || 0);
-}
-
-function dedupeCustomPackageRows(rows) {
-  const deduped = [];
-  const seen = new Map();
-
-  for (const row of Array.isArray(rows) ? rows : []) {
-    const entryId = customPackageEntryId(row);
-    if (!entryId) {
-      continue;
-    }
-    const previousIndex = seen.get(entryId);
-    if (previousIndex === undefined) {
-      seen.set(entryId, deduped.length);
-      deduped.push({
-        ...row,
-        id: entryId,
-      });
-      continue;
-    }
-    const current = deduped[previousIndex];
-    if (customPackageUpdatedAt(row) > customPackageUpdatedAt(current)) {
-      deduped[previousIndex] = {
-        ...row,
-        id: entryId,
-      };
-    }
-  }
-
-  return deduped.sort((left, right) => customPackageUpdatedAt(right) - customPackageUpdatedAt(left));
-}
-
 export function readStoriesCache(userId) {
   if (!userId) {
     return [];
@@ -104,18 +60,9 @@ export function upsertStoryCache(userId, story) {
     return;
   }
   const existing = readStoriesCache(userId);
-  const sessionId = String(story?.meta?.sessionId || "");
   const nextStories = [
     story,
-    ...existing.filter((item) => {
-      if (item?.id === story.id) {
-        return false;
-      }
-      if (!sessionId) {
-        return true;
-      }
-      return String(item?.meta?.sessionId || "") !== sessionId;
-    })
+    ...existing.filter((item) => item?.id !== story.id)
   ];
   writeStoriesCache(userId, nextStories);
 }
@@ -134,13 +81,8 @@ export function readCustomPackagesCache(userId) {
     return [];
   }
   const cacheMap = readCustomPackagesMap();
-  const rows = Array.isArray(cacheMap[userId]) ? cacheMap[userId] : [];
-  const dedupedRows = dedupeCustomPackageRows(rows);
-  if (dedupedRows.length !== rows.length) {
-    cacheMap[userId] = dedupedRows;
-    writeCustomPackagesMap(cacheMap);
-  }
-  return dedupedRows;
+  const rows = cacheMap[userId];
+  return Array.isArray(rows) ? rows : [];
 }
 
 export function upsertCustomPackageCache(userId, sessionPayload) {
@@ -152,31 +94,16 @@ export function upsertCustomPackageCache(userId, sessionPayload) {
     return;
   }
   const cacheMap = readCustomPackagesMap();
-  const rows = dedupeCustomPackageRows(Array.isArray(cacheMap[userId]) ? cacheMap[userId] : []);
-  const shelfEntryId = String(
-    sessionPayload?.meta?.shelfEntryId ||
-    sessionPayload?.meta?.replayOf ||
-    sessionPayload.id
-  );
+  const rows = Array.isArray(cacheMap[userId]) ? cacheMap[userId] : [];
   const row = {
-    id: shelfEntryId,
+    id: sessionPayload.id,
     updatedAt: Date.now(),
     opening: sessionPayload?.meta?.opening || "",
     title: sessionPayload?.package?.title || "",
     sourceType: "custom",
     session: sessionPayload,
   };
-  cacheMap[userId] = [row, ...rows.filter((item) => customPackageEntryId(item) !== row.id)];
-  writeCustomPackagesMap(cacheMap);
-}
-
-export function deleteCustomPackageCache(userId, packageId) {
-  if (!userId || !packageId) {
-    return;
-  }
-  const cacheMap = readCustomPackagesMap();
-  const rows = dedupeCustomPackageRows(Array.isArray(cacheMap[userId]) ? cacheMap[userId] : []);
-  cacheMap[userId] = rows.filter((item) => customPackageEntryId(item) !== String(packageId));
+  cacheMap[userId] = [row, ...rows.filter((item) => item?.id !== row.id)];
   writeCustomPackagesMap(cacheMap);
 }
 

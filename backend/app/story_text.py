@@ -1,5 +1,3 @@
-"""故事文本处理模块，负责清洗模型输出、修复 JSON 与保守拆段。"""
-
 from __future__ import annotations
 
 import json
@@ -233,60 +231,11 @@ def _extract_json_object(raw_text: str) -> dict[str, Any]:
 def _split_scene_into_paragraphs(scene: str) -> list[str]:
     """把场景正文拆成前端逐段展示用的段落数组。"""
     normalized = scene.replace("\r\n", "\n").strip()
-    explicit_breaks = [part.strip() for part in re.split(r"\n\s*\n+", normalized) if part.strip()]
-    if len(explicit_breaks) >= 2:
-        return explicit_breaks[:5]
-
-    inline_lines = [part.strip() for part in normalized.split("\n") if part.strip()]
-    if len(inline_lines) >= 2:
-        return inline_lines[:5]
-
-    sentence_units: list[str] = []
-    current: list[str] = []
-    quote_depth = 0
-    opening_quotes = {"「", "『", "“", "‘"}
-    closing_quotes = {"」", "』", "”", "’"}
-    sentence_endings = {"。", "！", "？", "!", "?"}
-
-    for char in normalized:
-        current.append(char)
-        if char in opening_quotes:
-            quote_depth += 1
-        elif char in closing_quotes and quote_depth > 0:
-            quote_depth -= 1
-        if char in sentence_endings and quote_depth == 0:
-            unit = "".join(current).strip()
-            if unit:
-                sentence_units.append(unit)
-            current = []
-
-    tail = "".join(current).strip()
-    if tail:
-        sentence_units.append(tail)
-
-    if len(sentence_units) <= 1:
-        return [normalized]
-
-    paragraphs: list[str] = []
-    bucket: list[str] = []
-    bucket_length = 0
-
-    for unit in sentence_units:
-        bucket.append(unit)
-        bucket_length += len(unit)
-        if bucket_length >= 70 or len(bucket) >= 2:
-            paragraphs.append("".join(bucket).strip())
-            bucket = []
-            bucket_length = 0
-
-    if bucket:
-        if paragraphs and len(bucket) == 1 and len(bucket[0]) < 26:
-            paragraphs[-1] = f"{paragraphs[-1]}{bucket[0]}".strip()
-        else:
-            paragraphs.append("".join(bucket).strip())
-
-    cleaned = [part.strip() for part in paragraphs if part.strip()]
-    return cleaned[:5] if cleaned else [normalized]
+    paragraphs = [part.strip() for part in normalized.split("\n") if part.strip()]
+    if len(paragraphs) >= 2:
+        return paragraphs[:5]
+    chunks = [part.strip() for part in normalized.replace("。", "。\n").split("\n") if part.strip()]
+    return chunks[:5] if chunks else [scene]
 
 
 def _normalize_ending_analysis(raw_text: str) -> dict[str, Any]:

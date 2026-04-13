@@ -49,23 +49,11 @@ async function fetchJson(path, options = {}, fallbackMessage = "Request failed")
   };
   debugLog("request", requestInfo);
 
-  let response;
-  try {
-    response = await fetch(requestInfo.url, {
-      credentials: "include",
-      ...options,
-      headers: mergedHeaders
-    });
-  } catch (error) {
-    const wrapped = new Error(
-      error?.name === "AbortError"
-        ? "请求超时，请稍后重试。"
-        : "网络连接失败，请检查当前网络后重试。"
-    );
-    wrapped.name = error?.name || "NetworkError";
-    wrapped.code = error?.name === "AbortError" ? "TIMEOUT" : "NETWORK_ERROR";
-    throw wrapped;
-  }
+  const response = await fetch(requestInfo.url, {
+    credentials: "include",
+    ...options,
+    headers: mergedHeaders
+  });
   const elapsedMs = Math.round(performance.now() - startedAt);
   const payload = await parseJsonResponse(response);
 
@@ -80,10 +68,7 @@ async function fetchJson(path, options = {}, fallbackMessage = "Request failed")
       typeof payload === "string"
         ? payload
         : payload?.detail?.message || payload?.detail || payload?.message || fallbackMessage;
-    const error = new Error(errorMessage || fallbackMessage);
-    error.status = response.status;
-    error.code = response.status >= 500 ? "SERVER_ERROR" : "REQUEST_ERROR";
-    throw error;
+    throw new Error(errorMessage || fallbackMessage);
   }
 
   debugLog("response", {
@@ -140,14 +125,6 @@ export async function startLibraryStoryFromSeed(storyId, payload, requestOptions
 
 export async function importLibraryStoryPackage(payload, requestOptions = {}) {
   return postJson("/api/library-stories/import-package", payload, "Library story package import failed", requestOptions);
-}
-
-export async function completeLibraryWorkbenchNode(payload, requestOptions = {}) {
-  return postJson("/api/library-workbench/ai-complete-node", payload, "Library workbench AI completion failed", requestOptions);
-}
-
-export async function parseLibraryWorkbenchOutline(payload, requestOptions = {}) {
-  return postJson("/api/library-workbench/ai-parse-outline", payload, "Library workbench outline parse failed", requestOptions);
 }
 
 export async function deleteImportedLibraryStory(storyId, requestOptions = {}) {
