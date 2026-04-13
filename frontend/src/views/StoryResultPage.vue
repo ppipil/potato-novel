@@ -1,4 +1,5 @@
 <script setup>
+// 阅读结果页负责播放单局 story package、推进 runtime、展示结局分析，并处理“保存书架”的本地/云端同步状态。
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import LoadingOverlay from "../components/LoadingOverlay.vue";
